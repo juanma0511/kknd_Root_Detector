@@ -63,8 +63,6 @@ class AppZygotePreload : ZygotePreload {
             return runCatching { checkAccessMethod.invoke(null, scon, tcon, tclass, perm) as Boolean }.getOrDefault(false)
         }
 
-        if (!checkAccess("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent")) return "ERROR: cannot check SELinux access"
-        if (!checkAccess("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context")) return "ERROR: cannot check SELinux context"
 
         val sb = StringBuilder()
         fun contextExists(ctx: String): Boolean {
@@ -75,8 +73,8 @@ class AppZygotePreload : ZygotePreload {
                 }
                 return true
             } catch (e: Exception) {
-                if (e is ErrnoException && e.errno != OsConstants.EINVAL) {
-                    throw RuntimeException("security_check_context errno=${e.errno}", e)
+                if (e is ErrnoException) {
+                    if (e.errno != OsConstants.EINVAL) return true
                 }
             }
             if (checkAccess("u:r:app_zygote:s0", ctx, "process", "dyntransition")) return true
@@ -84,10 +82,9 @@ class AppZygotePreload : ZygotePreload {
                 java.io.FileOutputStream("/proc/self/attr/current").use { out ->
                     Os.write(out.fd, data, 0, data.size)
                 }
-                throw RuntimeException("SELinux is broken")
+                return true
             } catch (e: Exception) {
                 if (e is ErrnoException) {
-                    if (e.errno == OsConstants.EINVAL) return false
                     if (e.errno == OsConstants.EPERM) return true
                 }
             }

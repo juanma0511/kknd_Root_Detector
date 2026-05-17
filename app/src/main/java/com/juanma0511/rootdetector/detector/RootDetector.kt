@@ -2622,12 +2622,12 @@ class RootDetector(private val context: Context) {
                 if (lines.isEmpty()) return detections
 
                 val statusLine = lines[0]
-                if (statusLine.startsWith("WARNING|")) {
-                    val msg = statusLine.removePrefix("WARNING|")
+                if (statusLine.contains("WARNING|")) {
+                    val msg = statusLine.substringAfter("WARNING|")
                     detections.add(det("dirty_sepolicy", "Dirty SELinux Policy", DetectionCategory.SYSTEM_PROPS, Severity.HIGH, msg, true, msg))
                 }
 
-                lines.drop(1).filter { it.contains("|") }.forEach { entry ->
+                lines.filter { it.contains("|") && !it.startsWith("OK|") && !it.startsWith("WARNING|") }.forEach { entry ->
                     val parts = entry.split("|", limit = 2)
                     detections.add(det(
                         "app_zygote_native_${parts[0]}", parts[0],
