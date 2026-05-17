@@ -131,9 +131,7 @@ class RootDetector(private val context: Context) {
             ::checkRecoveryArtifacts,
             ::checkInitDotD,
             ::checkDataLocalTmp,
-            ::checkResetpropModifications,
-            ::checkSelinuxAttrCurrentWrite,
-            ::checkSelinuxDirtyPolicy
+            ::checkResetpropModifications
         )
         val total = checks.size + 1 
         items.add(ZygiskDetector().detect())
@@ -2611,13 +2609,29 @@ class RootDetector(private val context: Context) {
                 override fun onServiceDisconnected(name: android.content.ComponentName?) { latch.countDown() }
             }
             if (context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
-                connection.latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                connection.latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
                 context.unbindService(connection)
-                connection.payload?.split("\n")?.filter { it.contains("|") }?.forEach { entry ->
+                val rawPayload = connection.payload ?: return detections
+
+                if (rawPayload.startsWith("ERROR:")) {
+                    detections.add(det("app_zygote_error", "AppZygote Error", DetectionCategory.SYSTEM_PROPS, Severity.LOW, rawPayload, false, rawPayload))
+                    return detections
+                }
+
+                val lines = rawPayload.split("\n")
+                if (lines.isEmpty()) return detections
+
+                val statusLine = lines[0]
+                if (statusLine.startsWith("WARNING|")) {
+                    val msg = statusLine.removePrefix("WARNING|")
+                    detections.add(det("dirty_sepolicy", "Dirty SELinux Policy", DetectionCategory.SYSTEM_PROPS, Severity.HIGH, msg, true, msg))
+                }
+
+                lines.drop(1).filter { it.contains("|") }.forEach { entry ->
                     val parts = entry.split("|", limit = 2)
                     detections.add(det(
-                        "app_zygote_${parts[0]}", parts[1].substringBefore(":"),
-                        DetectionCategory.SYSTEM_PROPS, Severity.HIGH,
+                        "app_zygote_native_${parts[0]}", parts[0],
+                        DetectionCategory.MAGISK, Severity.HIGH,
                         parts[1], true, parts[1]
                     ))
                 }

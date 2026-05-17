@@ -2463,37 +2463,31 @@ static void detectRiruNative() {
     }
 }
 
-static void detectSelinuxAttrCurrentWrite() {
-    struct { const char* label; const char* ctx; } targets[] = {
-        {"KernelSU",        "u:r:ksu:s0"},
-        {"KernelSU file",   "u:r:ksu_file:s0"},
-        {"Magisk",          "u:r:magisk:s0"},
-        {"Magisk file",     "u:r:magisk_file:s0"},
-        {"LSPosed file",    "u:r:lsposed_file:s0"},
-        {"Xposed data",     "u:r:xposed_data:s0"},
-        {"MSD app",         "u:r:msd_app:s0"},
-        {"MSD daemon",      "u:r:msd_daemon:s0"},
-        {nullptr, nullptr}
-    };
-    std::vector<std::string> hits;
-    for (int i = 0; targets[i].label; i++) {
-        int fd = open("/proc/self/attr/current", O_WRONLY | O_CLOEXEC);
-        if (fd < 0) break;
-        ssize_t written = write(fd, targets[i].ctx, strlen(targets[i].ctx) + 1);
+static bool selinux_context_exists(const char* context, int (*check_access)(const char*, const char*, const char*, const char*, void*)) {
+    int fd = open("/sys/fs/selinux/context", O_RDWR | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t written = write(fd, context, strlen(context) + 1);
         int err = errno;
         close(fd);
-        if (written >= 0) {
-            hits.push_back(std::string(targets[i].label) + ":SUCCESS");
-        } else if (err == EACCES) {
-            hits.push_back(std::string(targets[i].label) + ":EACCES");
-        }
+        if (written >= 0) return true;
+        if (err != EINVAL) return true;
     }
-    if (!hits.empty()) {
-        std::string d = "root contexts in live SELinux policy:";
-        for (auto& h : hits) d += " [" + h + "]";
-        add("selinux_attr_write", "SELinux Root Context Detected (attr/current)", d);
+
+    if (check_access && check_access("u:r:app_zygote:s0", context, "process", "dyntransition", nullptr) == 0) {
+        return true;
     }
+
+    fd = open("/proc/self/attr/current", O_WRONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t written = write(fd, context, strlen(context) + 1);
+        int err = errno;
+        close(fd);
+        if (written >= 0) return true;
+        if (err == EPERM) return true;
+    }
+    return false;
 }
+
 
 static void detectSelinuxDirtyPolicy() {
     typedef int (*check_access_fn)(const char*, const char*, const char*, const char*, void*);
@@ -2510,29 +2504,6 @@ static void detectSelinuxDirtyPolicy() {
     }
     if (!check_access) return;
 
-    struct Rule {
-        const char* src; const char* tgt;
-        const char* cls; const char* perm;
-        const char* label;
-        bool user_only;
-    } rules[] = {
-        {"u:r:system_server:s0",   "u:r:system_server:s0",       "process",           "execmem",   "system_server execmem", false},
-        {"u:r:untrusted_app:s0",   "u:object_r:magisk_file:s0",  "file",              "read",      "untrusted_app -> magisk_file read", false},
-        {"u:r:untrusted_app:s0",   "u:object_r:ksu_file:s0",     "file",              "read",      "untrusted_app -> ksu_file read", false},
-        {"u:r:untrusted_app:s0",   "u:object_r:lsposed_file:s0", "file",              "read",      "untrusted_app -> lsposed_file read", false},
-        {"u:r:untrusted_app:s0",   "u:object_r:xposed_data:s0",  "file",              "read",      "untrusted_app -> xposed_data read", false},
-        {"u:r:adbd:s0",            "u:r:adbroot:s0",             "binder",            "call",      "adbd -> adbroot binder", false},
-        {"u:r:zygote:s0",          "u:object_r:adb_data_file:s0","dir",               "search",    "zygote -> adb_data_file search", false},
-        {"u:r:shell:s0",           "u:r:su:s0",                  "process",           "transition","shell -> su transition", true},
-        {"u:r:fsck_untrusted:s0",  "u:r:fsck_untrusted:s0",      "capability",        "sys_admin", "fsck_untrusted sys_admin", false},
-        {"u:r:msd_app:s0",         "u:r:msd_daemon:s0",          "unix_stream_socket","connectto", "msd_app -> msd_daemon connect", false},
-        {"u:r:msd_daemon:s0",      "u:r:msd_daemon:s0",          "unix_stream_socket","connectto", "msd_daemon self connect", false},
-        {"u:r:msd_daemon:s0",      "u:object_r:selinuxfs:s0",    "file",              "read",      "msd_daemon -> selinuxfs read", false},
-        {"u:r:msd_daemon:s0",      "u:object_r:configfs:s0",     "dir",               "search",    "msd_daemon -> configfs dir search", false},
-        {"u:r:msd_daemon:s0",      "u:object_r:configfs:s0",     "file",              "write",     "msd_daemon -> configfs file write", false},
-        {nullptr, nullptr, nullptr, nullptr, nullptr, false}
-    };
-
     auto query = [&](const char* src, const char* tgt, const char* cls, const char* perm) -> int {
         errno = 0;
         int r = check_access(src, tgt, cls, perm, nullptr);
@@ -2547,11 +2518,64 @@ static void detectSelinuxDirtyPolicy() {
         return;
     }
 
+    // Sanity checks
+    if (query("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent") != 0) {
+        if (h_opened && h) dlclose(h);
+        return;
+    }
+    if (query("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context") != 0) {
+        if (h_opened && h) dlclose(h);
+        return;
+    }
+
+    struct Rule {
+        const char* src; const char* tgt;
+        const char* cls; const char* perm;
+        const char* label;
+        bool user_only;
+    } rules[] = {
+        {"u:r:system_server:s0",   "u:r:system_server:s0",       "process",           "execmem",   "system_server execmem", false},
+        {"u:r:adbd:s0",            "u:r:adbroot:s0",             "binder",            "call",      "adbd -> adbroot binder", false},
+        {"u:r:untrusted_app:s0",   "u:object_r:magisk_file:s0",  "file",              "read",      "untrusted_app -> magisk_file read", false},
+        {"u:object_r:rootfs:s0",   "u:object_r:tmpfs:s0",        "filesystem",        "associate", "rootfs associate tmpfs (Magisk)", false},
+        {"u:r:kernel:s0",          "u:object_r:tmpfs:s0",        "fifo_file",         "open",      "kernel open tmpfs fifo (Magisk)", false},
+        {"u:r:kernel:s0",          "u:object_r:adb_data_file:s0","file",              "read",      "kernel -> adb_data_file read (KSU)", false},
+        {"u:r:untrusted_app:s0",   "u:object_r:ksu_file:s0",     "file",              "read",      "untrusted_app -> ksu_file read", false},
+        {"u:r:untrusted_app:s0",   "u:object_r:lsposed_file:s0", "file",              "read",      "untrusted_app -> lsposed_file read", false},
+        {"u:r:system_server:s0",   "u:object_r:apk_data_file:s0","file",              "execute",   "system_server execute apk_data (LSPosed)", false},
+        {"u:r:untrusted_app:s0",   "u:object_r:xposed_data:s0",  "file",              "read",      "untrusted_app -> xposed_data read", false},
+        {"u:r:dex2oat:s0",         "u:object_r:dex2oat_exec:s0", "file",              "execute_no_trans", "dex2oat execute_no_trans (Xposed)", false},
+        {"u:r:zygote:s0",          "u:object_r:adb_data_file:s0","dir",               "search",    "zygote -> adb_data_file search", false},
+        {"u:r:shell:s0",           "u:r:su:s0",                  "process",           "transition","shell -> su transition", true},
+        {"u:r:fsck_untrusted:s0",  "u:r:fsck_untrusted:s0",      "capability",        "sys_admin", "fsck_untrusted sys_admin", false},
+        {"u:r:msd_app:s0",         "u:r:msd_daemon:s0",          "unix_stream_socket","connectto", "msd_app -> msd_daemon connect", false},
+        {"u:r:msd_daemon:s0",      "u:r:msd_daemon:s0",          "unix_stream_socket","connectto", "msd_daemon self connect", false},
+        {"u:r:msd_daemon:s0",      "u:object_r:selinuxfs:s0",    "file",              "read",      "msd_daemon -> selinuxfs read", false},
+        {"u:r:msd_daemon:s0",      "u:object_r:configfs:s0",     "dir",               "search",    "msd_daemon -> configfs dir search", false},
+        {"u:r:msd_daemon:s0",      "u:object_r:configfs:s0",     "file",              "write",     "msd_daemon -> configfs file write", false},
+        {nullptr, nullptr, nullptr, nullptr, nullptr, false}
+    };
+
     char build_type[256]{};
     bool is_user_build = (__system_property_get("ro.build.type", build_type) > 0 &&
                           strcmp(build_type, "user") == 0);
 
     std::vector<std::string> hits;
+
+    // Check for existance of contexts
+    const char* contexts[] = {
+        "u:r:magisk:s0", "u:object_r:magisk_file:s0",
+        "u:r:ksu:s0", "u:object_r:ksu_file:s0",
+        "u:object_r:lsposed_file:s0",
+        "u:object_r:xposed_data:s0", "u:object_r:xposed_file:s0",
+        "u:r:adbroot:s0", nullptr
+    };
+    for (int i = 0; contexts[i]; i++) {
+        if (selinux_context_exists(contexts[i], check_access)) {
+            hits.push_back(std::string("context exists: ") + contexts[i]);
+        }
+    }
+
     for (int i = 0; rules[i].src; i++) {
         if (rules[i].user_only && !is_user_build) continue;
         int r1 = query(rules[i].src, rules[i].tgt, rules[i].cls, rules[i].perm);
@@ -2641,7 +2665,6 @@ Java_com_juanma0511_rootdetector_detector_NativeChecks_runNativeChecks(JNIEnv* e
     detectXposedNative();
     detectMapsFiltering();
     detectRiruNative();
-    detectSelinuxAttrCurrentWrite();
     detectSelinuxDirtyPolicy();
 
     jclass sc = env->FindClass("java/lang/String");
