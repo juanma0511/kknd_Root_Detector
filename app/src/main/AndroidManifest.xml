@@ -28,7 +28,7 @@
             android:name=".service.SelinuxCarrierService"
             android:isolatedProcess="true"
             android:useAppZygote="true"
-            android:zygotePreloadName=".service.AppZygotePreload"
+            android:zygotePreloadName="com.juanma0511.rootdetector.service.AppZygotePreload"
             android:exported="false" />
 
     </application>

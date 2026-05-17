@@ -63,8 +63,12 @@ class AppZygotePreload : ZygotePreload {
             return runCatching { checkAccessMethod.invoke(null, scon, tcon, tclass, perm) as Boolean }.getOrDefault(false)
         }
 
+        val canSetCurrent = checkAccess("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent")
+        val canCheckContext = checkAccess("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context")
 
         val sb = StringBuilder()
+        if (!canSetCurrent) sb.append("NOTICE: process:setcurrent denied; ")
+        if (!canCheckContext) sb.append("NOTICE: security:check_context denied; ")
         fun contextExists(ctx: String): Boolean {
             val data = ctx.toByteArray(StandardCharsets.UTF_8)
             try {
@@ -119,6 +123,7 @@ class AppZygotePreload : ZygotePreload {
             checkAccess("u:r:dex2oat:s0", "u:object_r:dex2oat_exec:s0", "file", "execute_no_trans")) sb.append("found Xposed; ")
 
         if (checkAccess("u:r:zygote:s0", "u:object_r:adb_data_file:s0", "dir", "search")) sb.append("found ZygiskNext; ")
+        if (contextExists("u:object_r:susfs_file:s0") || contextExists("u:r:susfs:s0")) sb.append("found SUSFS; ")
 
         val nativeResults = if (NativeChecks.isAvailable()) NativeChecks().runNativeChecks() else emptyArray()
         val nativeString = nativeResults.joinToString("\n")

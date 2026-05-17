@@ -2659,6 +2659,9 @@ class RootDetector(private val context: Context) {
                 if (statusLine.contains("WARNING|")) {
                     val msg = statusLine.substringAfter("WARNING|")
                     detections.add(det("dirty_sepolicy", "Dirty SELinux Policy", DetectionCategory.SYSTEM_PROPS, Severity.HIGH, msg, true, msg))
+                } else if (statusLine.contains("OK|")) {
+                    val msg = statusLine.substringAfter("OK|")
+                    detections.add(det("selinux_oracle", "SELinux Policy Oracle", DetectionCategory.SYSTEM_PROPS, Severity.LOW, msg, false, msg))
                 }
 
                 lines.filter { it.contains("|") && !it.startsWith("OK|") && !it.startsWith("WARNING|") }.forEach { entry ->

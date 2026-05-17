@@ -2466,7 +2466,7 @@ static void detectRiruNative() {
 static bool selinux_context_exists(const char* context, int (*check_access)(const char*, const char*, const char*, const char*, void*)) {
     int fd = open("/sys/fs/selinux/context", O_RDWR | O_CLOEXEC);
     if (fd >= 0) {
-        ssize_t written = write(fd, context, strlen(context) + 1);
+        ssize_t written = write(fd, context, strlen(context));
         int err = errno;
         close(fd);
         if (written >= 0) return true;
@@ -2479,7 +2479,7 @@ static bool selinux_context_exists(const char* context, int (*check_access)(cons
 
     fd = open("/proc/self/attr/current", O_WRONLY | O_CLOEXEC);
     if (fd >= 0) {
-        ssize_t written = write(fd, context, strlen(context) + 1);
+        ssize_t written = write(fd, context, strlen(context));
         int err = errno;
         close(fd);
         if (written >= 0) return true;
@@ -2567,7 +2567,7 @@ static void detectSelinuxDirtyPolicy() {
         "u:r:magisk:s0", "u:object_r:magisk_file:s0",
         "u:object_r:lsposed_file:s0",
         "u:object_r:xposed_data:s0", "u:object_r:xposed_file:s0",
-        "u:r:adbroot:s0", nullptr
+        "u:r:adbroot:s0", "u:object_r:susfs_file:s0", "u:r:susfs:s0", nullptr
     };
     for (int i = 0; contexts[i]; i++) {
         if (selinux_context_exists(contexts[i], check_access)) {
