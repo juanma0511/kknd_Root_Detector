@@ -157,15 +157,9 @@ class RootDetector(private val context: Context) {
     private fun checkSuBinaries(): List<DetectionItem> {
         val found = suPaths.filter { File(it).exists() }
         val (regularFound, _) = splitOplusMatches(found)
-        val highConfidence = regularFound.any { path ->
-            runCatching {
-                val st = Os.stat(path)
-                (st.st_mode and OsConstants.S_ISUID) != 0 || (st.st_mode and OsConstants.S_IXUSR) != 0
-            }.getOrDefault(false)
-        }
         return listOf(det(
             "su_binary", "SU Binary Paths", DetectionCategory.SU_BINARIES,
-            if (highConfidence) Severity.HIGH else Severity.MEDIUM,
+            if (DetectorTrust.suBinaryCorroborated(regularFound)) Severity.HIGH else Severity.MEDIUM,
             "Checks for su binary in 17 known root paths",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))
@@ -2320,16 +2314,21 @@ class RootDetector(private val context: Context) {
                 evidence += "dir: $path"
             }
         }
+        var hasPropEvidence = false
         listOf(
             "ro.su.granted_count", "ro.su.secured_by",
             "ro.su.active_count", "ro.su.request_timeout"
         ).forEach { prop ->
             val v = getProp(prop)
-            if (v.isNotEmpty()) evidence += "$prop=$v"
+            if (v.isNotEmpty()) {
+                evidence += "$prop=$v"
+                hasPropEvidence = true
+            }
         }
         return listOf(det(
             "su_directory", "SU Directory Structure",
-            DetectionCategory.SU_BINARIES, Severity.HIGH,
+            DetectionCategory.SU_BINARIES,
+            if (hasPropEvidence) Severity.HIGH else Severity.MEDIUM,
             "Checks the /su directory hierarchy created by SuperSU and legacy root methods, and reads SuperSU system props",
             evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
