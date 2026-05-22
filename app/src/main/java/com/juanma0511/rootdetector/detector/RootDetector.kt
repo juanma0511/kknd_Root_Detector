@@ -9,6 +9,9 @@ import com.juanma0511.rootdetector.model.DetectionCategory
 import com.juanma0511.rootdetector.model.DetectionItem
 import com.juanma0511.rootdetector.model.Severity
 import java.io.File
+import android.system.Os
+import android.system.OsConstants
+import com.juanma0511.rootdetector.zygote.DirtySepolicyClient
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -128,8 +131,7 @@ class RootDetector(private val context: Context) {
             ::checkInitDotD,
             ::checkDataLocalTmp,
             ::checkResetpropModifications,
-            ::checkSelinuxAttrCurrentWrite,
-            ::checkSelinuxDirtyPolicy
+            ::checkAppZygoteSepolicy
         )
         val items = mutableListOf<DetectionItem>()
         val total = checks.size + 1 
@@ -155,8 +157,15 @@ class RootDetector(private val context: Context) {
     private fun checkSuBinaries(): List<DetectionItem> {
         val found = suPaths.filter { File(it).exists() }
         val (regularFound, _) = splitOplusMatches(found)
+        val highConfidence = regularFound.any { path ->
+            runCatching {
+                val st = Os.stat(path)
+                (st.st_mode and OsConstants.S_ISUID) != 0 || (st.st_mode and OsConstants.S_IXUSR) != 0
+            }.getOrDefault(false)
+        }
         return listOf(det(
-            "su_binary", "SU Binary Paths", DetectionCategory.SU_BINARIES, Severity.HIGH,
+            "su_binary", "SU Binary Paths", DetectionCategory.SU_BINARIES,
+            if (highConfidence) Severity.HIGH else Severity.MEDIUM,
             "Checks for su binary in 17 known root paths",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))
@@ -647,8 +656,15 @@ class RootDetector(private val context: Context) {
             }
         }
         val (regularFound, _) = splitOplusMatches(found)
+        val isSuid = regularFound.any { path ->
+            runCatching {
+                val st = Os.stat(path)
+                (st.st_mode and OsConstants.S_ISUID) != 0
+            }.getOrDefault(false)
+        }
         return listOf(det(
-            "su_in_path", "SU in \$PATH", DetectionCategory.SU_BINARIES, Severity.HIGH,
+            "su_in_path", "SU in \$PATH", DetectionCategory.SU_BINARIES,
+            if (isSuid) Severity.HIGH else Severity.MEDIUM,
             "Walks PATH for su binaries and root-specific executable directories",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))
@@ -667,100 +683,31 @@ class RootDetector(private val context: Context) {
         if (bootSelinux.equals("permissive", ignoreCase = true)) {
             evidence += "ro.boot.selinux=$bootSelinux"
         }
+        val isUserBuild = getProp("ro.build.type") == "user"
+        val severity = if (isUserBuild) Severity.HIGH else Severity.MEDIUM
         return listOf(det(
-            "selinux", "SELinux Permissive", DetectionCategory.SYSTEM_PROPS, Severity.HIGH,
+            "selinux", "SELinux Permissive", DetectionCategory.SYSTEM_PROPS, severity,
             "Permissive SELinux is a strong indicator of tampering and often survives root hiding",
             evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
     }
 
-    private fun checkSelinuxAttrCurrentWrite(): List<DetectionItem> {
-        val targets = listOf(
-            "KernelSU"      to "u:r:ksu:s0",
-            "KernelSU file" to "u:r:ksu_file:s0",
-            "Magisk"        to "u:r:magisk:s0",
-            "Magisk file"   to "u:r:magisk_file:s0",
-            "LSPosed file"  to "u:r:lsposed_file:s0",
-            "Xposed data"   to "u:r:xposed_data:s0",
-            "MSD app"       to "u:r:msd_app:s0",
-            "MSD daemon"    to "u:r:msd_daemon:s0"
-        )
-        val hits = linkedSetOf<String>()
-        for ((label, ctx) in targets) {
-            runCatching {
-                val payload = ctx.toByteArray(Charsets.UTF_8)
-                java.io.FileOutputStream("/proc/self/attr/current").use { out ->
-                    android.system.Os.write(out.fd, payload, 0, payload.size)
-                }
-                hits += "$label:SUCCESS"
-            }.onFailure { err ->
-                when {
-                    err is android.system.ErrnoException &&
-                        err.errno == android.system.OsConstants.EACCES ->
-                        hits += "$label:EACCES"
-                    err is java.io.IOException &&
-                        err.message?.lowercase()?.contains("permission denied") == true &&
-                        err.message?.lowercase()?.contains("invalid argument") == false ->
-                        hits += "$label:PermissionDenied"
-                }
-            }
-        }
-        return listOf(det(
-            "selinux_attr_write",
-            "SELinux Root Context Detected (attr/current)",
-            DetectionCategory.SYSTEM_PROPS,
-            Severity.HIGH,
-            "Writes root-specific SELinux context strings to /proc/self/attr/current. EINVAL means the context is not in the loaded policy (normal). Any other response proves the context type exists in the live policy — confirming Magisk, KernelSU, LSPosed or Xposed is loaded.",
-            hits.isNotEmpty(),
-            hits.joinToString("\n").ifEmpty { null }
-        ))
-    }
+    private fun checkSelinuxAttrCurrentWrite(): List<DetectionItem> = emptyList()
 
-    private fun checkSelinuxDirtyPolicy(): List<DetectionItem> {
-        val checkAccess: ((String, String, String, String) -> Boolean?)? = runCatching {
-            val cls = Class.forName("android.os.SELinux")
-            val method = cls.getMethod("checkSELinuxAccess",
-                String::class.java, String::class.java, String::class.java, String::class.java)
-            val fn: (String, String, String, String) -> Boolean? = { scon, tcon, tclass, perm ->
-                method.invoke(null, scon, tcon, tclass, perm) as? Boolean
-            }
-            fn
-        }.getOrNull()
+    private fun checkSelinuxDirtyPolicy(): List<DetectionItem> = emptyList()
 
-        val hits = linkedSetOf<String>()
-        if (checkAccess != null) {
-            val neg1 = runCatching { checkAccess("u:r:untrusted_app:s0", "u:r:init:s0", "binder", "call") }.getOrNull()
-            val neg2 = runCatching { checkAccess("u:r:untrusted_app:s0", "u:r:init:s0", "binder", "call") }.getOrNull()
-            val oracleReliable = neg1 != true && neg2 != true
-            if (oracleReliable) {
-                val isUserBuild = getProp("ro.build.type") == "user"
-                data class Rule(val src: String, val tgt: String, val cls: String, val perm: String, val label: String, val userBuildOnly: Boolean = false)
-                val rules = listOf(
-                    Rule("u:r:system_server:s0",  "u:r:system_server:s0",       "process", "execmem",   "system_server execmem"),
-                    Rule("u:r:untrusted_app:s0",  "u:object_r:magisk_file:s0",  "file",    "read",      "untrusted_app -> magisk_file read"),
-                    Rule("u:r:untrusted_app:s0",  "u:object_r:ksu_file:s0",     "file",    "read",      "untrusted_app -> ksu_file read"),
-                    Rule("u:r:untrusted_app:s0",  "u:object_r:lsposed_file:s0", "file",    "read",      "untrusted_app -> lsposed_file read"),
-                    Rule("u:r:untrusted_app:s0",  "u:object_r:xposed_data:s0",  "file",    "read",      "untrusted_app -> xposed_data read"),
-                    Rule("u:r:adbd:s0",           "u:r:adbroot:s0",             "binder",  "call",      "adbd -> adbroot binder"),
-                    Rule("u:r:zygote:s0",         "u:object_r:adb_data_file:s0","dir",     "search",    "zygote -> adb_data_file search"),
-                    Rule("u:r:shell:s0",          "u:r:su:s0",                  "process", "transition","shell -> su transition", userBuildOnly = true)
-                )
-                for (rule in rules) {
-                    if (rule.userBuildOnly && !isUserBuild) continue
-                    val r1 = runCatching { checkAccess(rule.src, rule.tgt, rule.cls, rule.perm) }.getOrNull()
-                    val r2 = runCatching { checkAccess(rule.src, rule.tgt, rule.cls, rule.perm) }.getOrNull()
-                    if (r1 == true && r2 == true) hits += "${rule.label}=allowed"
-                }
-            }
-        }
+    private fun checkAppZygoteSepolicy(): List<DetectionItem> {
+        val result = runCatching { DirtySepolicyClient.query(context) }.getOrDefault("ERROR:exception")
+        val hasWarning = result.contains("WARNING:")
+        val isBlocked = result.startsWith("BLOCKED:")
         return listOf(det(
-            "selinux_dirty_policy",
-            "DirtySepolicy Rule Detected",
+            "app_zygote_sepolicy",
+            "SELinux Policy Tampering (App-Zygote)",
             DetectionCategory.SYSTEM_PROPS,
-            Severity.HIGH,
-            "Queries specific SELinux access pairs via android.os.SELinux.checkSELinuxAccess that should always be denied on stock Android policy. If any are allowed, the loaded SELinux policy has been modified by a root framework (DirtySepolicy, Magisk, KernelSU, LSPosed or APatch).",
-            hits.isNotEmpty(),
-            hits.joinToString("\n").ifEmpty { null }
+            if (hasWarning) Severity.HIGH else Severity.MEDIUM,
+            "Runs SELinux policy probes from the app_zygote isolated process. WARNING hits confirm root-framework policy modifications. BLOCKED means the isolated service was killed — itself a strong indicator.",
+            hasWarning || isBlocked,
+            if (hasWarning || isBlocked) result.take(500) else null
         ))
     }
 

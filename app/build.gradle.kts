@@ -14,8 +14,8 @@ android {
         applicationId = "com.juanma0511.rootdetector"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "3.1"
+        versionCode = 5
+        versionName = "3.2"
         buildToolsVersion = "36.1.0"
 
         externalNativeBuild {

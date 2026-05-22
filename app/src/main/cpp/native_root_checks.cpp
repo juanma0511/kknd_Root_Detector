@@ -2613,8 +2613,7 @@ Java_com_juanma0511_rootdetector_detector_NativeChecks_runNativeChecks(JNIEnv* e
     detectXposedNative();
     detectMapsFiltering();
     detectRiruNative();
-    detectSelinuxAttrCurrentWrite();
-    detectSelinuxDirtyPolicy();
+    if (false) { detectSelinuxAttrCurrentWrite(); detectSelinuxDirtyPolicy(); }
 
     jclass sc = env->FindClass("java/lang/String");
     jobjectArray r = env->NewObjectArray((jsize)g_results.size(), sc, nullptr);
