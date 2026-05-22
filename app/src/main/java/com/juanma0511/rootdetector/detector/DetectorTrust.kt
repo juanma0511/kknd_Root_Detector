@@ -171,6 +171,22 @@ object DetectorTrust {
         return false
     }
 
+    fun suBinaryCorroborated(foundPaths: List<String>): Boolean {
+        if (foundPaths.isEmpty()) return false
+        val isSuid = foundPaths.any { path ->
+            runCatching {
+                val st = android.system.Os.stat(path)
+                (st.st_mode and android.system.OsConstants.S_ISUID) != 0
+            }.getOrDefault(false)
+        }
+        if (isSuid) return true
+        val knownRootDirs = setOf("/su/bin", "/su/xbin", "/data/local/bin", "/data/local/xbin")
+        val inRootDir = foundPaths.any { path ->
+            knownRootDirs.any { dir -> path.startsWith(dir) }
+        }
+        return inRootDir
+    }
+
     private fun isZeroLike(value: String): Boolean {
         val normalized = value.filterNot { it == ':' || it == '-' || it.isWhitespace() }
         return normalized.isNotEmpty() && normalized.all { it == '0' }

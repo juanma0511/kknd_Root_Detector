@@ -684,11 +684,10 @@ class RootDetector(private val context: Context) {
             evidence += "ro.boot.selinux=$bootSelinux"
         }
         val isUserBuild = getProp("ro.build.type") == "user"
-        val severity = if (isUserBuild) Severity.HIGH else Severity.MEDIUM
         return listOf(det(
-            "selinux", "SELinux Permissive", DetectionCategory.SYSTEM_PROPS, severity,
+            "selinux", "SELinux Permissive", DetectionCategory.SYSTEM_PROPS, Severity.HIGH,
             "Permissive SELinux is a strong indicator of tampering and often survives root hiding",
-            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+            sysfsPermissive && isUserBuild, evidence.joinToString("\n").ifEmpty { null }
         ))
     }
 
@@ -2040,21 +2039,23 @@ class RootDetector(private val context: Context) {
         val suspicious = linkedSetOf<String>()
         val recentThresholdMs = 30L * 24 * 60 * 60 * 1000
         val now = System.currentTimeMillis()
-        val pathsToCheck = listOf(
-            "/data/adb/magisk", "/data/adb/ksu", "/data/adb/ap",
-            "/data/adb/modules", "/debug_ramdisk"
-        )
-        pathsToCheck.forEach { path ->
+        val highConfidencePaths = listOf("/data/adb/magisk", "/data/adb/ksu", "/data/adb/ap", "/data/adb/modules")
+        val lowConfidencePaths = listOf("/debug_ramdisk")
+        val allPaths = highConfidencePaths + lowConfidencePaths
+        var highHit = false
+        allPaths.forEach { path ->
             val f = java.io.File(path)
             if (f.exists()) {
                 val age = now - f.lastModified()
                 if (age < recentThresholdMs && f.lastModified() > 0) {
                     suspicious += "$path (modified ${age / 86400000}d ago)"
+                    if (path in highConfidencePaths) highHit = true
                 }
             }
         }
         return listOf(det(
-            "su_timestamps", "Recent Root Artifact Timestamps", DetectionCategory.MAGISK, Severity.HIGH,
+            "su_timestamps", "Recent Root Artifact Timestamps", DetectionCategory.MAGISK,
+            if (highHit) Severity.HIGH else Severity.MEDIUM,
             "Root artifacts modified within the last 30 days indicate active root installation",
             suspicious.isNotEmpty(), suspicious.joinToString("\n").ifEmpty { null }
         ))
