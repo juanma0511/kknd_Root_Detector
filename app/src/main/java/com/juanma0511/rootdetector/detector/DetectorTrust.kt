@@ -196,12 +196,10 @@ object DetectorTrust {
         }
     }
 
-    companion object {
-        val OEM_STOCK_SU_PATHS = setOf(
-            "/system/xbin/su",
-            "/system/bin/su",
-        )
-    }
+    val OEM_STOCK_SU_PATHS = setOf(
+        "/system/xbin/su",
+        "/system/bin/su",
+    )
 
     private fun isZeroLike(value: String): Boolean {
         val normalized = value.filterNot { it == ':' || it == '-' || it.isWhitespace() }

@@ -655,20 +655,19 @@ class RootDetector(private val context: Context) {
             }
         }
         val (regularFound, _) = splitOplusMatches(found)
-        val isSuid = regularFound.any { path ->
+        val isSuidOrExec = regularFound.any { path ->
             runCatching {
                 val st = Os.stat(path)
-                (st.st_mode and OsConstants.S_ISUID) != 0
+                (st.st_mode and OsConstants.S_ISUID) != 0 || (st.st_mode and OsConstants.S_IXUSR) != 0
             }.getOrDefault(false)
         }
         val severity = when {
-            isSuid -> Severity.HIGH
-            DetectorTrust.suBinaryIsOemBenign(regularFound.toList()) -> Severity.LOW
-            else -> Severity.MEDIUM
+            isSuidOrExec -> Severity.HIGH
+            else         -> Severity.LOW
         }
         return listOf(det(
             "su_in_path", "SU in \$PATH", DetectionCategory.SU_BINARIES, severity,
-            "Walks PATH for su binaries and root-specific executable directories",
+            "Walks PATH for su binaries. HIGH requires SUID or execute bit. Non-executable path hits are LOW.",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))
     }
