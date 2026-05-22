@@ -21,13 +21,6 @@ class RootDetector(private val context: Context) {
 
     private val suPaths = HardcodedSignals.suPaths
 
-    companion object {
-        private val OEM_STOCK_SU_PATHS = setOf(
-            "/system/xbin/su",
-            "/system/bin/su",
-        )
-    }
-
     private val mediumToolPackages = linkedMapOf(
         "com.dimonvideo.luckypatcher" to "Lucky Patcher",
         "com.chelpus.lackypatch" to "Lucky Patcher",
@@ -165,10 +158,14 @@ class RootDetector(private val context: Context) {
     private fun checkSuBinaries(): List<DetectionItem> {
         val found = suPaths.filter { File(it).exists() }
         val (regularFound, _) = splitOplusMatches(found)
+        val severity = when {
+            DetectorTrust.suBinaryCorroborated(regularFound) -> Severity.HIGH
+            DetectorTrust.suBinaryIsOemBenign(regularFound) -> Severity.LOW
+            else -> Severity.MEDIUM
+        }
         return listOf(det(
-            "su_binary", "SU Binary Paths", DetectionCategory.SU_BINARIES,
-            if (DetectorTrust.suBinaryCorroborated(regularFound)) Severity.HIGH else Severity.MEDIUM,
-            "Checks for su binary in 17 known root paths",
+            "su_binary", "SU Binary Paths", DetectionCategory.SU_BINARIES, severity,
+            "Checks for su binary in known root paths. HIGH requires SUID/exec or root-dir. LOW for known OEM stock stubs.",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))
     }
@@ -664,10 +661,9 @@ class RootDetector(private val context: Context) {
                 (st.st_mode and OsConstants.S_ISUID) != 0
             }.getOrDefault(false)
         }
-        val allBenign = regularFound.isNotEmpty() && regularFound.all { it in OEM_STOCK_SU_PATHS }
         val severity = when {
             isSuid -> Severity.HIGH
-            allBenign -> Severity.LOW
+            DetectorTrust.suBinaryIsOemBenign(regularFound.toList()) -> Severity.LOW
             else -> Severity.MEDIUM
         }
         return listOf(det(
@@ -705,15 +701,23 @@ class RootDetector(private val context: Context) {
     private fun checkAppZygoteSepolicy(): List<DetectionItem> {
         val result = runCatching { DirtySepolicyClient.query(context) }.getOrDefault("ERROR:exception")
         val hasWarning = result.contains("WARNING:")
-        val isBlocked = result.startsWith("BLOCKED:")
+        val isBlocked  = result.startsWith("BLOCKED:")
+        val isError    = !hasWarning && !isBlocked &&
+                         (result.startsWith("ERROR:") || result.startsWith("UNSUPPORTED:"))
+        val severity = when {
+            hasWarning || isBlocked -> Severity.HIGH
+            isError                 -> Severity.LOW
+            else                    -> Severity.MEDIUM
+        }
         return listOf(det(
             "app_zygote_sepolicy",
             "SELinux Policy Tampering (App-Zygote)",
             DetectionCategory.SYSTEM_PROPS,
-            if (hasWarning) Severity.HIGH else Severity.MEDIUM,
-            "Runs SELinux policy probes from the app_zygote isolated process. WARNING hits confirm root-framework policy modifications. BLOCKED means the isolated service was killed — itself a strong indicator.",
-            hasWarning || isBlocked,
-            if (hasWarning || isBlocked) result.take(500) else null
+            severity,
+            "Runs SELinux policy probes from the app_zygote isolated process. " +
+            "WARNING/BLOCKED = root framework detected. ERROR/UNSUPPORTED = service unavailable (informational only).",
+            hasWarning || isBlocked || isError,
+            result.take(500)
         ))
     }
 

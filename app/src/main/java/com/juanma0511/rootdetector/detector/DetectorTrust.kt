@@ -173,18 +173,34 @@ object DetectorTrust {
 
     fun suBinaryCorroborated(foundPaths: List<String>): Boolean {
         if (foundPaths.isEmpty()) return false
-        val isSuid = foundPaths.any { path ->
+        val hasSuidOrExec = foundPaths.any { path ->
             runCatching {
                 val st = android.system.Os.stat(path)
-                (st.st_mode and android.system.OsConstants.S_ISUID) != 0
+                (st.st_mode and android.system.OsConstants.S_ISUID) != 0 ||
+                (st.st_mode and android.system.OsConstants.S_IXUSR) != 0
             }.getOrDefault(false)
         }
-        if (isSuid) return true
+        if (hasSuidOrExec) return true
         val knownRootDirs = setOf("/su/bin", "/su/xbin", "/data/local/bin", "/data/local/xbin")
-        val inRootDir = foundPaths.any { path ->
-            knownRootDirs.any { dir -> path.startsWith(dir) }
+        return foundPaths.any { path -> knownRootDirs.any { dir -> path.startsWith(dir) } }
+    }
+
+    fun suBinaryIsOemBenign(foundPaths: List<String>): Boolean {
+        if (foundPaths.isEmpty()) return false
+        return foundPaths.all { it in OEM_STOCK_SU_PATHS } && foundPaths.none { path ->
+            runCatching {
+                val st = android.system.Os.stat(path)
+                (st.st_mode and android.system.OsConstants.S_ISUID) != 0 ||
+                (st.st_mode and android.system.OsConstants.S_IXUSR) != 0
+            }.getOrDefault(false)
         }
-        return inRootDir
+    }
+
+    companion object {
+        val OEM_STOCK_SU_PATHS = setOf(
+            "/system/xbin/su",
+            "/system/bin/su",
+        )
     }
 
     private fun isZeroLike(value: String): Boolean {
