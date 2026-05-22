@@ -20,6 +20,14 @@ import java.util.TimeZone
 class RootDetector(private val context: Context) {
 
     private val suPaths = HardcodedSignals.suPaths
+
+    companion object {
+        private val OEM_STOCK_SU_PATHS = setOf(
+            "/system/xbin/su",
+            "/system/bin/su",
+        )
+    }
+
     private val mediumToolPackages = linkedMapOf(
         "com.dimonvideo.luckypatcher" to "Lucky Patcher",
         "com.chelpus.lackypatch" to "Lucky Patcher",
@@ -656,9 +664,14 @@ class RootDetector(private val context: Context) {
                 (st.st_mode and OsConstants.S_ISUID) != 0
             }.getOrDefault(false)
         }
+        val allBenign = regularFound.isNotEmpty() && regularFound.all { it in OEM_STOCK_SU_PATHS }
+        val severity = when {
+            isSuid -> Severity.HIGH
+            allBenign -> Severity.LOW
+            else -> Severity.MEDIUM
+        }
         return listOf(det(
-            "su_in_path", "SU in \$PATH", DetectionCategory.SU_BINARIES,
-            if (isSuid) Severity.HIGH else Severity.MEDIUM,
+            "su_in_path", "SU in \$PATH", DetectionCategory.SU_BINARIES, severity,
             "Walks PATH for su binaries and root-specific executable directories",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))

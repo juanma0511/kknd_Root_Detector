@@ -3,8 +3,34 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="io.github.huskydg.magisk" />
+        <package android:name="io.github.vvb2060.magisk" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="me.bmax.apatch" />
+        <package android:name="org.lsposed.manager" />
+        <package android:name="de.robv.android.xposed.installer" />
+        <package android:name="eu.chainfire.supersu" />
+        <package android:name="com.koushikdutta.superuser" />
+        <package android:name="com.noshufou.android.su" />
+        <package android:name="com.dees.ptm.superuser" />
+        <package android:name="com.yellowes.su" />
+        <package android:name="com.saurik.substrate" />
+        <package android:name="top.canyie.dreamland.manager" />
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.zhenxi.hunter" />
+        <package android:name="io.github.huskydg.magiskhide" />
+        <package android:name="com.devadvance.rootcloak" />
+        <package android:name="com.devadvance.rootcloak2" />
+        <package android:name="com.amphoras.hidemyrootfree" />
+        <package android:name="com.formyhm.hiderootPremium" />
+    </queries>
 
     <application
         android:allowBackup="false"
