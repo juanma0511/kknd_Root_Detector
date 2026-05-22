@@ -96,6 +96,8 @@ public final class AppZygote implements ZygotePreload {
                 return 0;
             } catch (android.system.ErrnoException e) {
                 return e.errno;
+            } catch (java.io.IOException e) {
+                return android.system.OsConstants.EIO;
             } finally {
                 try { fos.close(); } catch (java.io.IOException ignored) {}
             }
@@ -113,6 +115,8 @@ public final class AppZygote implements ZygotePreload {
                 return 0;
             } catch (android.system.ErrnoException e) {
                 return e.errno;
+            } catch (java.io.IOException e) {
+                return android.system.OsConstants.EIO;
             } finally {
                 try { fos.close(); } catch (java.io.IOException ignored) {}
             }
