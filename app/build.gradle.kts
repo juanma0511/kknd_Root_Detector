@@ -88,7 +88,10 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        aidl   = true
+    }
 
     lint {
         checkReleaseBuilds = false
