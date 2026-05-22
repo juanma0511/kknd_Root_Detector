@@ -146,9 +146,9 @@ public final class AppZygote implements ZygotePreload {
             // Negative controls: these should NEVER be allowed on stock policy.
             // If they are, the checkSELinuxAccess API itself is unreliable; bail out.
             boolean neg1 = Boolean.TRUE.equals(m.invoke(null,
-                "u:r:untrusted_app:s0", "u:r:init:s0", "binder", "call"));
+                "u:r:untrusted_app:s0", "u:r:init:s0",   "binder",  "call"));
             boolean neg2 = Boolean.TRUE.equals(m.invoke(null,
-                "u:r:untrusted_app:s0", "u:r:init:s0", "binder", "call"));
+                "u:r:untrusted_app:s0", "u:r:kernel:s0", "process", "transition"));
             if (neg1 || neg2) return;
 
             Object[][] rules = {

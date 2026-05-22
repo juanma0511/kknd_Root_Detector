@@ -2516,8 +2516,8 @@ static void detectSelinuxDirtyPolicy() {
         return check_access(src, tgt, cls, perm, nullptr);
     };
 
-    int neg1 = query("u:r:untrusted_app:s0", "u:r:init:s0", "binder", "call");
-    int neg2 = query("u:r:untrusted_app:s0", "u:r:init:s0", "binder", "call");
+    int neg1 = query("u:r:untrusted_app:s0", "u:r:init:s0",   "binder",  "call");
+    int neg2 = query("u:r:untrusted_app:s0", "u:r:kernel:s0", "process", "transition");
     if (neg1 == 0 || neg2 == 0) return;
 
     char build_type[256]{};
@@ -2613,6 +2613,8 @@ Java_com_juanma0511_rootdetector_detector_NativeChecks_runNativeChecks(JNIEnv* e
     detectXposedNative();
     detectMapsFiltering();
     detectRiruNative();
+    detectSelinuxAttrCurrentWrite();
+    detectSelinuxDirtyPolicy();
     jclass sc = env->FindClass("java/lang/String");
     jobjectArray r = env->NewObjectArray((jsize)g_results.size(), sc, nullptr);
     for (size_t i = 0; i < g_results.size(); i++) {
