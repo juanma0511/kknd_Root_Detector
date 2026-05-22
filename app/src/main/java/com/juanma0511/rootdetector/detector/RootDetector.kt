@@ -715,7 +715,7 @@ class RootDetector(private val context: Context) {
             severity,
             "Runs SELinux policy probes from the app_zygote isolated process. " +
             "WARNING/BLOCKED = root framework detected. ERROR/UNSUPPORTED = service unavailable (informational only).",
-            hasWarning || isBlocked || isError,
+            hasWarning || isBlocked,
             result.take(500)
         ))
     }
