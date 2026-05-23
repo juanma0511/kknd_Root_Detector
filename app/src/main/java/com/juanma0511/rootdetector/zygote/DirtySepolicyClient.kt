@@ -45,9 +45,24 @@ object DirtySepolicyClient {
                 latch.countDown()
             }
         }
-        val intent = Intent(context, DirtySepolicyService::class.java)
+        val appCtx = context.applicationContext
+        val intent = Intent(appCtx, DirtySepolicyService::class.java)
+        // CRITICAL: use bindIsolatedService (API 29+) with an instance name so
+        // the system actually routes the isolated process through app_zygote
+        // (per useAppZygote="true" + zygotePreloadName in the manifest).
+        // Plain bindService() can spawn a regular isolated process that
+        // bypasses app_zygote entirely -- in that case AppZygote.doPreload()
+        // is never called and AppZygote.result stays at its initial sentinel
+        // "ERROR: app zygote not called", which is what we observed on the
+        // user's rooted device.
         val bound = try {
-            context.applicationContext.bindService(intent, conn, Context.BIND_AUTO_CREATE)
+            appCtx.bindIsolatedService(
+                intent,
+                Context.BIND_AUTO_CREATE,
+                "dirtysepolicy",
+                appCtx.mainExecutor,
+                conn
+            )
         } catch (_: Throwable) {
             false
         }
