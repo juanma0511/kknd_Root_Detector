@@ -698,24 +698,23 @@ class RootDetector(private val context: Context) {
     private fun checkSelinuxDirtyPolicy(): List<DetectionItem> = emptyList()
 
     private fun checkAppZygoteSepolicy(): List<DetectionItem> {
-        val result = runCatching { DirtySepolicyClient.query(context) }.getOrDefault("ERROR:exception")
-        val hasWarning = result.contains("WARNING:")
-        val isBlocked  = result.startsWith("BLOCKED:")
-        val isError    = !hasWarning && !isBlocked &&
-                         (result.startsWith("ERROR:") || result.startsWith("UNSUPPORTED:"))
-        val severity = when {
-            hasWarning || isBlocked -> Severity.HIGH
-            isError                 -> Severity.LOW
-            else                    -> Severity.MEDIUM
-        }
+        val result = runCatching { DirtySepolicyClient.query(context) }
+            .getOrDefault("ERROR: query exception")
+        // Adapted from LSPosed/DirtySepolicy result contract:
+        //   "WARNING: ..."  -> root framework detected via dirty sepolicy
+        //   "OK: ..."       -> clean policy, no signals
+        //   "ERROR: ..."    -> sanity gate failed, API broken, or service
+        //                      unavailable. NOT a detection (informational).
+        val isWarning = result.startsWith("WARNING:")
+        val severity  = if (isWarning) Severity.HIGH else Severity.LOW
         return listOf(det(
             "app_zygote_sepolicy",
             "SELinux Policy Tampering (App-Zygote)",
             DetectionCategory.SYSTEM_PROPS,
             severity,
             "Runs SELinux policy probes from the app_zygote isolated process. " +
-            "WARNING/BLOCKED = root framework detected. ERROR/UNSUPPORTED = service unavailable (informational only).",
-            hasWarning || isBlocked,
+            "Only WARNING results count as a detection. OK and ERROR are informational.",
+            isWarning,
             result.take(500)
         ))
     }

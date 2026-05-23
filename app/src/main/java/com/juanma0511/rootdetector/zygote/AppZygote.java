@@ -3,232 +3,271 @@ package com.juanma0511.rootdetector.zygote;
 import android.annotation.TargetApi;
 import android.app.ZygotePreload;
 import android.content.pm.ApplicationInfo;
+import android.os.Build;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+import android.util.Log;
 
+import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+
+/**
+ * SELinux / DirtySepolicy detector running inside the app_zygote isolated process.
+ *
+ * Strategy adapted from LSPosed/DirtySepolicy
+ * (https://github.com/LSPosed/DirtySepolicy):
+ *
+ *   1. Sanity-gate the SELinux state before doing any policy probes. If the
+ *      context, PID match, /proc/self match, enforced flag, or required API
+ *      permissions are not exactly as expected, return "ERROR: ..." -- NEVER
+ *      a WARNING. This eliminates false positives from broken/hooked APIs.
+ *
+ *   2. For each known root framework, OR together several SELinux signals:
+ *      contextExists() probes plus targeted checkSELinuxAccess() rules.
+ *      Any single hit emits "found X" for that framework.
+ *
+ *   3. contextExists() uses the kernel's strict EINVAL/EPERM semantics:
+ *        - Write to /sys/fs/selinux/context: success = true, EINVAL = not in
+ *          policy (continue), other errno = SELinux is in an unexpected state
+ *          -> throw (yields ERROR, not a false WARNING).
+ *        - dyntransition allowed -> true.
+ *        - Write to /proc/self/attr/current: EINVAL = type not in policy,
+ *          EPERM = type exists but transition denied (true), success = the
+ *          kernel is broken -> throw.
+ *
+ * Result prefixes consumed by RootDetector.checkAppZygoteSepolicy:
+ *   "WARNING: ..."  -> root framework detected (HIGH, detected=true)
+ *   "OK: ..."       -> clean policy        (LOW, detected=false)
+ *   "ERROR: ..."    -> service/API issue   (LOW, detected=false, informational)
+ */
 @TargetApi(29)
 public final class AppZygote implements ZygotePreload {
 
-    static volatile String result = "ERROR:preload_not_called";
+    private static final String TAG = "RootDetector-AppZygote";
+
+    static volatile String result = "ERROR: app zygote not called";
 
     @Override
     public void doPreload(ApplicationInfo appInfo) {
-        java.util.Set<Integer> fdsBefore = snapshotOpenFds();
+        int uid = Os.getuid();
+        if (uid != appInfo.uid) {
+            result = "ERROR: UID mismatch: " + uid + " != app uid " + appInfo.uid;
+            return;
+        }
+
+        // On API <= 30, libselinux can leak a netlink socket FD during
+        // selinux_check_access. The fd is rejected when the app_zygote later
+        // forks isolated children, crashing the zygote. Track open FDs before
+        // doCheck() and dup2 any new ones to FileDescriptor.in afterwards.
+        HashSet<String> baseline = new HashSet<>();
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            File[] fds = new File("/proc/self/fd").listFiles(File::exists);
+            if (fds != null) {
+                for (File fd : fds) baseline.add(fd.getName());
+            }
+        }
+
         try {
-            result = runChecks();
-        } catch (Throwable t) {
-            result = "ERROR:" + t.getClass().getSimpleName();
+            result = doCheck();
+        } catch (RuntimeException e) {
+            result = "ERROR: " + e.getMessage();
+            Log.e(TAG, Log.getStackTraceString(e));
         } finally {
-            redirectNewFdsToDevNull(fdsBefore);
-        }
-    }
-
-    private static String runChecks() {
-        StringBuilder sb = new StringBuilder();
-        probeContextExists(sb);
-        probeDirtyPolicy(sb);
-        return sb.length() == 0 ? "CLEAN" : sb.toString();
-    }
-
-    private static final String[] CONTEXT_LABELS = {
-        "KernelSU", "KernelSU_file", "Magisk", "Magisk_file",
-        "LSPosed_file", "Xposed_file", "Xposed_data",
-        "MSD_app", "MSD_daemon", "APatch", "ZygiskNext", "AOSP_su"
-    };
-
-    private static final String[] CONTEXT_VALUES = {
-        "u:r:ksu:s0", "u:r:ksu_file:s0", "u:r:magisk:s0", "u:r:magisk_file:s0",
-        "u:r:lsposed_file:s0", "u:r:xposed_file:s0", "u:r:xposed_data:s0",
-        "u:r:msd_app:s0", "u:r:msd_daemon:s0", "u:r:apd:s0", "u:r:zygisk_daemon:s0", "u:r:su:s0"
-    };
-
-    private static void probeContextExists(StringBuilder out) {
-        for (int i = 0; i < CONTEXT_LABELS.length; i++) {
-            String label = CONTEXT_LABELS[i];
-            String ctx   = CONTEXT_VALUES[i];
-
-            // Probe 1: /sys/fs/selinux/context — kernel validates context against loaded policy.
-            // EINVAL/EPERM = type NOT in policy (stock device) → skip entirely.
-            // EACCES/0    = type EXISTS in policy (DirtySepolicy injected it) → proceed.
-            int probe1Errno = checkContextInPolicy(ctx);
-            if (probe1Errno == android.system.OsConstants.EINVAL
-                    || probe1Errno == android.system.OsConstants.EPERM) {
-                continue;
-            }
-            String probe1 = (probe1Errno == 0) ? "EXIST_WRITABLE" : "EXIST_errno" + probe1Errno;
-
-            // Probe 2: dyntransition check — is process→target dyntransition allowed by policy?
-            String currentCtx = getCurrentContext();
-            boolean dynAllowed = false;
-            try {
-                Class<?> sel = Class.forName("android.os.SELinux");
-                java.lang.reflect.Method m = sel.getMethod(
-                    "checkSELinuxAccess", String.class, String.class, String.class, String.class);
-                dynAllowed = Boolean.TRUE.equals(m.invoke(null, currentCtx, ctx, "process", "dyntransition"));
-            } catch (Throwable ignored) {}
-
-            // Probe 3: /proc/self/attr/current write — actual transition attempt.
-            // 0     = write succeeded (highest confidence)
-            // EACCES = type exists in policy but transition denied (root framework present)
-            // EINVAL/EPERM = type not in policy (should have been caught by probe 1, but guard here)
-            int probe3Errno = probeAttrCurrentWrite(ctx);
-            if (probe3Errno == android.system.OsConstants.EINVAL
-                    || probe3Errno == android.system.OsConstants.EPERM) {
-                continue;
-            }
-            String probe3 = (probe3Errno == 0) ? "WRITTEN" : "EACCES";
-
-            out.append("WARNING:context_exists:")
-               .append(label)
-               .append(":p1=").append(probe1)
-               .append(":p2_dyntrans=").append(dynAllowed ? "yes" : "no")
-               .append(":p3=").append(probe3)
-               .append("\n");
-        }
-    }
-
-    private static int checkContextInPolicy(String ctx) {
-        // Write to /sys/fs/selinux/context to validate context against loaded SELinux policy.
-        // Returns errno (0 on success).
-        try {
-            java.io.FileOutputStream fos = new java.io.FileOutputStream("/sys/fs/selinux/context", false);
-            try {
-                byte[] bytes = (ctx + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                android.system.Os.write(fos.getFD(), bytes, 0, bytes.length);
-                return 0;
-            } catch (android.system.ErrnoException e) {
-                return e.errno;
-            } catch (java.io.IOException e) {
-                return android.system.OsConstants.EIO;
-            } finally {
-                try { fos.close(); } catch (java.io.IOException ignored) {}
-            }
-        } catch (java.io.FileNotFoundException e) {
-            return android.system.OsConstants.ENOENT;
-        }
-    }
-
-    private static int probeAttrCurrentWrite(String ctx) {
-        try {
-            java.io.FileOutputStream fos = new java.io.FileOutputStream("/proc/self/attr/current", false);
-            try {
-                byte[] bytes = (ctx + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                android.system.Os.write(fos.getFD(), bytes, 0, bytes.length);
-                return 0;
-            } catch (android.system.ErrnoException e) {
-                return e.errno;
-            } catch (java.io.IOException e) {
-                return android.system.OsConstants.EIO;
-            } finally {
-                try { fos.close(); } catch (java.io.IOException ignored) {}
-            }
-        } catch (java.io.FileNotFoundException e) {
-            return android.system.OsConstants.ENOENT;
-        }
-    }
-
-    private static String getCurrentContext() {
-        try {
-            return new String(
-                java.nio.file.Files.readAllBytes(java.nio.file.Paths.get("/proc/self/attr/current")),
-                java.nio.charset.StandardCharsets.UTF_8).trim();
-        } catch (Throwable t) {
-            return "u:r:untrusted_app:s0";
-        }
-    }
-
-    private static void probeDirtyPolicy(StringBuilder out) {
-        try {
-            Class<?> cls = Class.forName("android.os.SELinux");
-            java.lang.reflect.Method m = cls.getMethod("checkSELinuxAccess",
-                String.class, String.class, String.class, String.class);
-
-            boolean isUser = "user".equals(getSystemProperty("ro.build.type", ""));
-
-            // Negative controls: these should NEVER be allowed on stock policy.
-            // If they are, the checkSELinuxAccess API itself is unreliable; bail out.
-            boolean neg1 = Boolean.TRUE.equals(m.invoke(null,
-                "u:r:untrusted_app:s0", "u:r:init:s0",   "binder",  "call"));
-            boolean neg2 = Boolean.TRUE.equals(m.invoke(null,
-                "u:r:untrusted_app:s0", "u:r:kernel:s0", "process", "transition"));
-            if (neg1 || neg2) return;
-
-            Object[][] rules = {
-                // --- Magisk / generic root framework rules ---
-                {"u:r:untrusted_app:s0",  "u:object_r:magisk_file:s0",      "file",    "read",          "magisk_file_read",             false},
-                {"u:r:untrusted_app:s0",  "u:object_r:ksu_file:s0",         "file",    "read",          "ksu_file_read",                false},
-                {"u:r:untrusted_app:s0",  "u:object_r:lsposed_file:s0",     "file",    "read",          "lsposed_file_read",            false},
-                {"u:r:untrusted_app:s0",  "u:object_r:xposed_data:s0",      "file",    "read",          "xposed_data_read",             false},
-                {"u:r:untrusted_app:s0",  "u:object_r:apd_exec:s0",         "file",    "execute",       "apd_exec_execute",             false},
-                // --- su transition (user-build only, stronger signal) ---
-                {"u:r:shell:s0",          "u:r:su:s0",                      "process", "transition",    "shell_su_transition",          true},
-                {"u:r:untrusted_app:s0",  "u:r:su:s0",                      "process", "dyntransition", "untrusted_su_dyntransition",   false},
-                // --- system_server execmem (Magisk/Zygisk injection) ---
-                {"u:r:system_server:s0",  "u:r:system_server:s0",           "process", "execmem",       "system_server_execmem",        false},
-                // --- LSPosed: system_server ↔ apk_data_file execute ---
-                {"u:r:system_server:s0",  "u:object_r:apk_data_file:s0",    "file",    "execute",       "ss_apk_data_execute",          false},
-                // --- Xposed dex2oat exec permission ---
-                {"u:r:dex2oat:s0",        "u:object_r:apk_data_file:s0",    "file",    "execute",       "dex2oat_apk_data_execute",     false},
-                // --- KernelSU: kernel ↔ adb_data_file ---
-                {"u:r:kernel:s0",         "u:object_r:adb_data_file:s0",    "dir",     "search",        "kernel_adb_data_search",       false},
-                // --- rootfs ↔ tmpfs associate (root bind-mount injection) ---
-                {"u:object_r:rootfs:s0",  "u:object_r:tmpfs:s0",            "filesystem","associate",   "rootfs_tmpfs_associate",       false},
-                // --- kernel ↔ tmpfs fifo_file (root pipe injection) ---
-                {"u:r:kernel:s0",         "u:object_r:tmpfs:s0",            "fifo_file","write",        "kernel_tmpfs_fifo_write",      false},
-                // --- adbd adbroot binder call ---
-                {"u:r:adbd:s0",           "u:r:adbroot:s0",                 "binder",  "call",          "adbd_adbroot_binder",          false},
-                // --- ZygiskNext daemon write (root hiding) ---
-                {"u:r:zygote:s0",         "u:object_r:adb_data_file:s0",    "dir",     "search",        "zygote_adb_data_search",       false},
-            };
-
-            for (Object[] rule : rules) {
-                if ((boolean) rule[5] && !isUser) continue;
-                boolean r1 = Boolean.TRUE.equals(m.invoke(null, rule[0], rule[1], rule[2], rule[3]));
-                boolean r2 = Boolean.TRUE.equals(m.invoke(null, rule[0], rule[1], rule[2], rule[3]));
-                if (r1 && r2) {
-                    out.append("WARNING:dirty_policy:").append(rule[4]).append("\n");
-                }
-            }
-        } catch (Throwable ignored) {}
-    }
-
-    private static String getSystemProperty(String key, String def) {
-        try {
-            Class<?> cls = Class.forName("android.os.SystemProperties");
-            java.lang.reflect.Method m = cls.getMethod("get", String.class, String.class);
-            return (String) m.invoke(null, key, def);
-        } catch (Throwable t) {
-            return def;
-        }
-    }
-
-    private static java.util.Set<Integer> snapshotOpenFds() {
-        java.util.Set<Integer> fds = new java.util.HashSet<>();
-        String[] names = new java.io.File("/proc/self/fd").list();
-        if (names != null) {
-            for (String n : names) {
-                try { fds.add(Integer.parseInt(n)); } catch (NumberFormatException ignored) {}
-            }
-        }
-        return fds;
-    }
-
-    private static void redirectNewFdsToDevNull(java.util.Set<Integer> baseline) {
-        try {
-            java.io.FileDescriptor devNull = android.system.Os.open(
-                "/dev/null", android.system.OsConstants.O_RDWR, 0);
-            java.lang.reflect.Field f = java.io.FileDescriptor.class.getDeclaredField("descriptor");
-            f.setAccessible(true);
-            int devNullFd = f.getInt(devNull);
-            String[] names = new java.io.File("/proc/self/fd").list();
-            if (names != null) {
-                for (String n : names) {
-                    int fd;
-                    try { fd = Integer.parseInt(n); } catch (NumberFormatException e) { continue; }
-                    if (!baseline.contains(fd) && fd != devNullFd) {
-                        try { android.system.Os.dup2(devNull, fd); } catch (Throwable ignored) {}
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+                File[] fds = new File("/proc/self/fd").listFiles(File::exists);
+                if (fds != null) {
+                    for (File fd : fds) {
+                        if (baseline.add(fd.getName())) {
+                            try {
+                                Os.dup2(FileDescriptor.in, Integer.parseInt(fd.getName()));
+                            } catch (ErrnoException | NumberFormatException e) {
+                                Log.e(TAG, "Close leaked SELinux netlink fd " + fd.getName(), e);
+                            }
+                        }
                     }
                 }
             }
-            android.system.Os.close(devNull);
-        } catch (Throwable ignored) {}
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    //  Core check
+    // ---------------------------------------------------------------------
+
+    private static String doCheck() {
+        if (!Sel.isEnabled()) {
+            return "ERROR: SELinux is disabled";
+        }
+        String context = Sel.getContext();
+        if (context == null || !context.startsWith("u:r:app_zygote:s0")) {
+            return "ERROR: unexpected SELinux context: " + context;
+        }
+        String pidContext = Sel.getPidContext(Os.getpid());
+        if (!context.equals(pidContext)) {
+            return "ERROR: PID context mismatch: " + pidContext;
+        }
+        String procContext = Sel.getFileContext("/proc/self");
+        if (!context.equals(procContext)) {
+            return "ERROR: /proc/self context mismatch: " + procContext;
+        }
+        if (!Sel.isEnforced()) {
+            return "ERROR: SELinux is permissive";
+        }
+        if (!Sel.checkAccess("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent")) {
+            return "ERROR: cannot check SELinux access (process:setcurrent denied)";
+        }
+        if (!Sel.checkAccess("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context")) {
+            return "ERROR: cannot check SELinux context (security:check_context denied)";
+        }
+
+        StringBuilder sb = new StringBuilder();
+
+        if (Sel.checkAccess("u:r:system_server:s0", "u:r:system_server:s0", "process", "execmem")) {
+            sb.append("system_server can execmem; ");
+        }
+        if ("user".equals(Build.TYPE)
+                && Sel.checkAccess("u:r:shell:s0", "u:r:su:s0", "process", "transition")) {
+            sb.append("found AOSP su in user build; ");
+        }
+        if (contextExists("u:r:adbroot:s0")
+                || Sel.checkAccess("u:r:adbd:s0", "u:r:adbroot:s0", "binder", "call")) {
+            sb.append("found adb_root; ");
+        }
+        if (contextExists("u:r:magisk:s0") || contextExists("u:object_r:magisk_file:s0")
+                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:magisk_file:s0", "file", "read")
+                || Sel.checkAccess("u:object_r:rootfs:s0", "u:object_r:tmpfs:s0", "filesystem", "associate")
+                || Sel.checkAccess("u:r:kernel:s0", "u:object_r:tmpfs:s0", "fifo_file", "open")) {
+            sb.append("found Magisk; ");
+        }
+        if (contextExists("u:r:ksu:s0") || contextExists("u:object_r:ksu_file:s0")
+                || Sel.checkAccess("u:r:kernel:s0", "u:object_r:adb_data_file:s0", "file", "read")
+                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:ksu_file:s0", "file", "read")) {
+            sb.append("found KernelSU; ");
+        }
+        if (contextExists("u:r:apd:s0") || contextExists("u:object_r:apd_exec:s0")
+                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:apd_exec:s0", "file", "execute")) {
+            sb.append("found APatch; ");
+        }
+        if (contextExists("u:object_r:lsposed_file:s0")
+                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:lsposed_file:s0", "file", "read")
+                || Sel.checkAccess("u:r:system_server:s0", "u:object_r:apk_data_file:s0", "file", "execute")) {
+            sb.append("found LSPosed; ");
+        }
+        if (contextExists("u:object_r:xposed_data:s0") || contextExists("u:object_r:xposed_file:s0")
+                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:xposed_data:s0", "file", "read")
+                || Sel.checkAccess("u:r:dex2oat:s0", "u:object_r:dex2oat_exec:s0", "file", "execute_no_trans")) {
+            sb.append("found Xposed; ");
+        }
+        if (Sel.checkAccess("u:r:zygote:s0", "u:object_r:adb_data_file:s0", "dir", "search")) {
+            sb.append("found ZygiskNext; ");
+        }
+
+        if (sb.length() == 0) {
+            return "OK: no dirty sepolicy found";
+        }
+        return "WARNING: " + sb;
+    }
+
+    // ---------------------------------------------------------------------
+    //  contextExists -- strict EINVAL/EPERM semantics
+    // ---------------------------------------------------------------------
+
+    private static boolean contextExists(String context) {
+        byte[] data = context.getBytes(StandardCharsets.UTF_8);
+
+        // Probe 1: security:check_context via /sys/fs/selinux/context.
+        // Success     -> context exists in policy.
+        // EINVAL      -> type not in loaded policy -> continue.
+        // Other errno -> SELinux is in an unexpected state -> throw (ERROR).
+        try (FileOutputStream file = new FileOutputStream("/sys/fs/selinux/context")) {
+            Os.write(file.getFD(), data, 0, data.length);
+            return true;
+        } catch (ErrnoException e) {
+            if (e.errno != OsConstants.EINVAL) {
+                throw new RuntimeException("security_check_context errno=" + e.errno, e);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("security_check_context: " + e.getMessage(), e);
+        }
+
+        // Probe 2: dyntransition allowed -> type exists.
+        if (Sel.checkAccess("u:r:app_zygote:s0", context, "process", "dyntransition")) {
+            return true;
+        }
+
+        // Probe 3: process:setcurrent via /proc/self/attr/current. Kernel
+        // validates the context first (EINVAL if invalid) then dyntransition
+        // (EPERM if denied). A successful write would mean the kernel is
+        // bypassed -> we throw to surface that as ERROR.
+        try (FileOutputStream current = new FileOutputStream("/proc/self/attr/current")) {
+            Os.write(current.getFD(), data, 0, data.length);
+            throw new RuntimeException("SELinux broken: setcon to '" + context + "' succeeded");
+        } catch (ErrnoException e) {
+            if (e.errno == OsConstants.EINVAL) return false;
+            if (e.errno == OsConstants.EPERM)  return true;
+            throw new RuntimeException("setcon errno=" + e.errno, e);
+        } catch (IOException e) {
+            throw new RuntimeException("setcon: " + e.getMessage(), e);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    //  android.os.SELinux reflection wrapper
+    // ---------------------------------------------------------------------
+
+    private static final class Sel {
+        private static final Class<?> CLS;
+        private static final Method M_IS_ENABLED;
+        private static final Method M_IS_ENFORCED;
+        private static final Method M_GET_CONTEXT;
+        private static final Method M_GET_PID_CONTEXT;
+        private static final Method M_GET_FILE_CONTEXT;
+        private static final Method M_CHECK_ACCESS;
+
+        static {
+            try {
+                CLS = Class.forName("android.os.SELinux");
+                M_IS_ENABLED       = CLS.getMethod("isSELinuxEnabled");
+                M_IS_ENFORCED      = CLS.getMethod("isSELinuxEnforced");
+                M_GET_CONTEXT      = CLS.getMethod("getContext");
+                M_GET_PID_CONTEXT  = CLS.getMethod("getPidContext", int.class);
+                M_GET_FILE_CONTEXT = CLS.getMethod("getFileContext", String.class);
+                M_CHECK_ACCESS     = CLS.getMethod("checkSELinuxAccess",
+                        String.class, String.class, String.class, String.class);
+            } catch (Throwable t) {
+                throw new RuntimeException("SELinux reflection setup failed: " + t.getMessage(), t);
+            }
+        }
+
+        static boolean isEnabled() {
+            try { return (Boolean) M_IS_ENABLED.invoke(null); }
+            catch (Throwable t) { return false; }
+        }
+        static boolean isEnforced() {
+            try { return (Boolean) M_IS_ENFORCED.invoke(null); }
+            catch (Throwable t) { return false; }
+        }
+        static String getContext() {
+            try { return (String) M_GET_CONTEXT.invoke(null); }
+            catch (Throwable t) { return null; }
+        }
+        static String getPidContext(int pid) {
+            try { return (String) M_GET_PID_CONTEXT.invoke(null, pid); }
+            catch (Throwable t) { return null; }
+        }
+        static String getFileContext(String path) {
+            try { return (String) M_GET_FILE_CONTEXT.invoke(null, path); }
+            catch (Throwable t) { return null; }
+        }
+        static boolean checkAccess(String src, String tgt, String cls, String perm) {
+            try { return Boolean.TRUE.equals(M_CHECK_ACCESS.invoke(null, src, tgt, cls, perm)); }
+            catch (Throwable t) { return false; }
+        }
     }
 }

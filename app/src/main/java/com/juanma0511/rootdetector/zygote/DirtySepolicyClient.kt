@@ -17,7 +17,7 @@ object DirtySepolicyClient {
     fun query(context: Context, timeoutMs: Long = 4000L): String {
         cached?.let { return it }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            cached = "UNSUPPORTED:api<29"
+            cached = "ERROR: app_zygote unsupported on API ${Build.VERSION.SDK_INT}"
             return cached!!
         }
         val resultRef = AtomicReference<String?>(null)
@@ -25,20 +25,23 @@ object DirtySepolicyClient {
         val conn = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, service: IBinder) {
                 try {
-                    resultRef.set(IDirtySepolicyService.Stub.asInterface(service).result ?: "ERROR:null_result")
+                    resultRef.set(
+                        IDirtySepolicyService.Stub.asInterface(service).result
+                            ?: "ERROR: null result from service"
+                    )
                 } catch (t: Throwable) {
-                    resultRef.set("ERROR:${t.javaClass.simpleName}")
+                    resultRef.set("ERROR: ${t.javaClass.simpleName}: ${t.message}")
                 } finally {
                     latch.countDown()
                 }
             }
             override fun onServiceDisconnected(name: ComponentName) {}
             override fun onBindingDied(name: ComponentName) {
-                resultRef.compareAndSet(null, "BLOCKED:binding_died")
+                resultRef.compareAndSet(null, "ERROR: service binding died")
                 latch.countDown()
             }
             override fun onNullBinding(name: ComponentName) {
-                resultRef.compareAndSet(null, "ERROR:null_binding")
+                resultRef.compareAndSet(null, "ERROR: null binding from service")
                 latch.countDown()
             }
         }
@@ -49,17 +52,21 @@ object DirtySepolicyClient {
             false
         }
         if (!bound) {
-            cached = "ERROR:bind_failed"
+            cached = "ERROR: failed to bind isolated service"
             return cached!!
         }
         try {
             if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-                resultRef.compareAndSet(null, "BLOCKED:timeout")
+                // Per LSPosed README, timeout MAY indicate app_zygote was killed
+                // by a root framework. In practice it also fires on slow boot,
+                // restricted background bind, and benign system pressure --
+                // so we surface it as ERROR (informational), not a detection.
+                resultRef.compareAndSet(null, "ERROR: service connection timed out")
             }
         } finally {
             try { context.applicationContext.unbindService(conn) } catch (_: Throwable) {}
         }
-        cached = resultRef.get() ?: "ERROR:unknown"
+        cached = resultRef.get() ?: "ERROR: unknown bind state"
         return cached!!
     }
 
