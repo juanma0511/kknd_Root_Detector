@@ -75,8 +75,13 @@ public final class AppZygote implements ZygotePreload {
 
         try {
             result = doCheck();
-        } catch (RuntimeException e) {
-            result = "ERROR: " + e.getMessage();
+        } catch (Throwable e) {
+            // Catch Throwable (not just RuntimeException) so that LinkageError,
+            // ExceptionInInitializerError, or hidden-API blocking on the Sel
+            // reflection static initializer cannot escape and crash the
+            // isolated app_zygote process. Any escape would surface to the
+            // client as a bind timeout, costing detection coverage.
+            result = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
             Log.e(TAG, Log.getStackTraceString(e));
         } finally {
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
