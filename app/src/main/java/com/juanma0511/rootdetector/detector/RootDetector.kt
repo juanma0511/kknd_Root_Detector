@@ -132,7 +132,8 @@ class RootDetector(private val context: Context) {
             ::checkInitDotD,
             ::checkDataLocalTmp,
             ::checkResetpropModifications,
-            ::checkAppZygoteSepolicy
+            ::checkAppZygoteSepolicy,
+            ::checkContextValidityOracle
         )
         val items = mutableListOf<DetectionItem>()
         val total = checks.size + 1 
@@ -715,6 +716,33 @@ class RootDetector(private val context: Context) {
             "Runs SELinux policy probes from the app_zygote isolated process. " +
             "Only WARNING results count as a detection. OK and ERROR are informational.",
             isWarning,
+            result.take(500)
+        ))
+    }
+
+    private fun checkContextValidityOracle(): List<DetectionItem> {
+        // Runs the context-validity oracle inside the app_zygote isolated
+        // process (the only app-reachable SELinux domain holding
+        // security:check_context / compute_av). See AppZygote.runContextValidityOracle.
+        val result = runCatching { DirtySepolicyClient.queryContextValidity(context) }
+            .getOrDefault("ERROR: query exception")
+        // Result contract:
+        //   "ROOT: ..."   -> a root framework's SELinux footprint is present
+        //   "CLEAN: ..."  -> no root SELinux contexts in live policy
+        //   "ERROR: ..."  -> gate/self-test failure or service issue (informational).
+        val isRoot = result.startsWith("ROOT:")
+        val severity = if (isRoot) Severity.HIGH else Severity.LOW
+        return listOf(det(
+            "context_validity_oracle",
+            "SELinux Context Validity Oracle (App-Zygote)",
+            DetectionCategory.SYSTEM_PROPS,
+            severity,
+            "From the app_zygote isolated process, asks the live kernel policy whether a root " +
+            "framework's SELinux footprint is present via two oracles: raw selinuxfs context " +
+            "validity (e.g. u:object_r:ksu_file:s0) and AVC rule lookup (e.g. untrusted_app -> " +
+            "ksu:binder call). Negative sentinel controls guard against rubber-stamping. Only " +
+            "ROOT counts as a detection; CLEAN and ERROR are informational.",
+            isRoot,
             result.take(500)
         ))
     }

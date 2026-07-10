@@ -12,6 +12,11 @@ public final class DirtySepolicyService extends Service {
         public String getResult() {
             return AppZygote.result;
         }
+
+        @Override
+        public String getContextValidityResult() {
+            return AppZygote.oracleResult;
+        }
     };
 
     @Override

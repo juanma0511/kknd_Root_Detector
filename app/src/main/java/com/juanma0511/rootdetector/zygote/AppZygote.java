@@ -6,45 +6,29 @@ import android.content.pm.ApplicationInfo;
 import android.os.Build;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.system.OsConstants;
 import android.util.Log;
 
-import java.io.File;
-import java.io.FileDescriptor;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 
 /**
- * SELinux / DirtySepolicy detector running inside the app_zygote isolated process.
+ * SELinux / DirtySepolicy detector running inside the app_zygote isolated
+ * process. Ported from LSPosed/DirtySepolicy (https://github.com/LSPosed/DirtySepolicy).
  *
- * Strategy adapted from LSPosed/DirtySepolicy
- * (https://github.com/LSPosed/DirtySepolicy):
+ * <p>Crucially this uses {@link SELinux} (direct selinuxfs I/O) and NO reflection
+ * on the hidden {@code android.os.SELinux} class. The earlier reflection-based
+ * version aborted the app_zygote preload process (blocklisted hidden-API),
+ * causing the system to fall back to a plain isolated process so {@code doPreload}
+ * never ran and the binder only returned the initial sentinel. Direct selinuxfs
+ * access fixes that and is exactly what makes LSPosed's tool work.
  *
- *   1. Sanity-gate the SELinux state before doing any policy probes. If the
- *      context, PID match, /proc/self match, enforced flag, or required API
- *      permissions are not exactly as expected, return "ERROR: ..." -- NEVER
- *      a WARNING. This eliminates false positives from broken/hooked APIs.
- *
- *   2. For each known root framework, OR together several SELinux signals:
- *      contextExists() probes plus targeted checkSELinuxAccess() rules.
- *      Any single hit emits "found X" for that framework.
- *
- *   3. contextExists() uses the kernel's strict EINVAL/EPERM semantics:
- *        - Write to /sys/fs/selinux/context: success = true, EINVAL = not in
- *          policy (continue), other errno = SELinux is in an unexpected state
- *          -> throw (yields ERROR, not a false WARNING).
- *        - dyntransition allowed -> true.
- *        - Write to /proc/self/attr/current: EINVAL = type not in policy,
- *          EPERM = type exists but transition denied (true), success = the
- *          kernel is broken -> throw.
- *
- * Result prefixes consumed by RootDetector.checkAppZygoteSepolicy:
- *   "WARNING: ..."  -> root framework detected (HIGH, detected=true)
- *   "OK: ..."       -> clean policy        (LOW, detected=false)
- *   "ERROR: ..."    -> service/API issue   (LOW, detected=false, informational)
+ * <p>Two results are exposed to the client:
+ * <ul>
+ *   <li>{@link #result} -- dirty-sepolicy sweep. "WARNING: ..." = detection,
+ *       "OK: ..." = clean, "ERROR: ..." = sanity gate failed (informational).
+ *   <li>{@link #oracleResult} -- context-validity oracle. "ROOT: ..." = a root
+ *       framework's SELinux footprint is present, "CLEAN: ..." = none,
+ *       "ERROR: ..." = gate/self-test failure (informational).
+ * </ul>
  */
 @TargetApi(29)
 public final class AppZygote implements ZygotePreload {
@@ -52,125 +36,138 @@ public final class AppZygote implements ZygotePreload {
     private static final String TAG = "RootDetector-AppZygote";
 
     static volatile String result = "ERROR: app zygote not called";
+    static volatile String oracleResult = "ERROR: app zygote not called";
 
     @Override
     public void doPreload(ApplicationInfo appInfo) {
         int uid = Os.getuid();
         if (uid != appInfo.uid) {
             result = "ERROR: UID mismatch: " + uid + " != app uid " + appInfo.uid;
+            oracleResult = result;
             return;
-        }
-
-        // On API <= 30, libselinux can leak a netlink socket FD during
-        // selinux_check_access. The fd is rejected when the app_zygote later
-        // forks isolated children, crashing the zygote. Track open FDs before
-        // doCheck() and dup2 any new ones to FileDescriptor.in afterwards.
-        HashSet<String> baseline = new HashSet<>();
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
-            File[] fds = new File("/proc/self/fd").listFiles(File::exists);
-            if (fds != null) {
-                for (File fd : fds) baseline.add(fd.getName());
-            }
         }
 
         try {
             result = doCheck();
         } catch (Throwable e) {
-            // Catch Throwable (not just RuntimeException) so that LinkageError,
-            // ExceptionInInitializerError, or hidden-API blocking on the Sel
-            // reflection static initializer cannot escape and crash the
-            // isolated app_zygote process. Any escape would surface to the
-            // client as a bind timeout, costing detection coverage.
             result = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
             Log.e(TAG, Log.getStackTraceString(e));
-        } finally {
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
-                File[] fds = new File("/proc/self/fd").listFiles(File::exists);
-                if (fds != null) {
-                    for (File fd : fds) {
-                        if (baseline.add(fd.getName())) {
-                            try {
-                                Os.dup2(FileDescriptor.in, Integer.parseInt(fd.getName()));
-                            } catch (ErrnoException | NumberFormatException e) {
-                                Log.e(TAG, "Close leaked SELinux netlink fd " + fd.getName(), e);
-                            }
-                        }
-                    }
-                }
-            }
+        }
+
+        try {
+            oracleResult = runContextValidityOracle();
+        } catch (Throwable e) {
+            oracleResult = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+            Log.e(TAG, Log.getStackTraceString(e));
         }
     }
 
     // ---------------------------------------------------------------------
-    //  Core check
+    //  Dirty-sepolicy sweep (LSPosed/DirtySepolicy doCheck, verbatim logic)
     // ---------------------------------------------------------------------
 
+    private static int parseVersion(String release, int start) {
+        int end = start;
+        while (end < release.length()) {
+            var c = release.charAt(end);
+            if (c < '0' || c > '9') break;
+            end++;
+        }
+        return Integer.parseInt(release.substring(start, end));
+    }
+
+    private static boolean isNewKernel() {
+        var release = Os.uname().release;
+        int major = parseVersion(release, 0);
+        int dot = release.indexOf('.');
+        int minor = parseVersion(release, dot + 1);
+        // https://github.com/torvalds/linux/commit/fc983171e4c8
+        return major > 6 || (major == 6 && minor >= 10);
+    }
+
     private static String doCheck() {
-        if (!Sel.isEnabled()) {
+        if (!SELinux.isSELinuxEnabled()) {
             return "ERROR: SELinux is disabled";
         }
-        String context = Sel.getContext();
+        var context = SELinux.getContext();
         if (context == null || !context.startsWith("u:r:app_zygote:s0")) {
             return "ERROR: unexpected SELinux context: " + context;
         }
-        String pidContext = Sel.getPidContext(Os.getpid());
+        var pidContext = SELinux.getPidContext(Os.getpid());
         if (!context.equals(pidContext)) {
             return "ERROR: PID context mismatch: " + pidContext;
         }
-        String procContext = Sel.getFileContext("/proc/self");
+        var procContext = SELinux.getFileContext("/proc/self");
         if (!context.equals(procContext)) {
             return "ERROR: /proc/self context mismatch: " + procContext;
         }
-        if (!Sel.isEnforced()) {
-            return "ERROR: SELinux is permissive";
+        if (!SELinux.checkSELinuxAccess("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent")) {
+            return "ERROR: cannot check SELinux access";
         }
-        if (!Sel.checkAccess("u:r:app_zygote:s0", "u:r:app_zygote:s0", "process", "setcurrent")) {
-            return "ERROR: cannot check SELinux access (process:setcurrent denied)";
+        if (!SELinux.checkSELinuxAccess("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context")) {
+            return "ERROR: cannot check SELinux context";
         }
-        if (!Sel.checkAccess("u:r:app_zygote:s0", "u:r:kernel:s0", "security", "check_context")) {
-            return "ERROR: cannot check SELinux context (security:check_context denied)";
+        var sb = new StringBuilder();
+        if (!SELinux.isSELinuxEnforced()) {
+            sb.append("SELinux is permissive; ");
         }
-
-        StringBuilder sb = new StringBuilder();
-
-        if (Sel.checkAccess("u:r:system_server:s0", "u:r:system_server:s0", "process", "execmem")) {
+        if (SELinux.checkSELinuxAccess("u:r:system_server:s0", "u:r:system_server:s0", "process", "execmem")) {
             sb.append("system_server can execmem; ");
         }
-        if ("user".equals(Build.TYPE)
-                && Sel.checkAccess("u:r:shell:s0", "u:r:su:s0", "process", "transition")) {
+        if (Build.TYPE.equals("user")
+                && SELinux.checkSELinuxAccess("u:r:shell:s0", "u:r:su:s0", "process", "transition")) {
             sb.append("found AOSP su in user build; ");
         }
-        if (contextExists("u:r:adbroot:s0")
-                || Sel.checkAccess("u:r:adbd:s0", "u:r:adbroot:s0", "binder", "call")) {
+        if (SELinux.contextExists("u:r:adbroot:s0")) {
             sb.append("found adb_root; ");
         }
-        if (contextExists("u:r:magisk:s0") || contextExists("u:object_r:magisk_file:s0")
-                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:magisk_file:s0", "file", "read")
-                || Sel.checkAccess("u:object_r:rootfs:s0", "u:object_r:tmpfs:s0", "filesystem", "associate")
-                || Sel.checkAccess("u:r:kernel:s0", "u:object_r:tmpfs:s0", "fifo_file", "open")) {
+        if (SELinux.contextExists("u:r:magisk:s0") || SELinux.contextExists("u:object_r:magisk_file:s0")
+                || SELinux.checkSELinuxAccess("u:object_r:rootfs:s0", "u:object_r:tmpfs:s0", "filesystem", "associate")
+                || SELinux.checkSELinuxAccess("u:r:kernel:s0", "u:object_r:tmpfs:s0", "fifo_file", "open")) {
             sb.append("found Magisk; ");
         }
-        if (contextExists("u:r:ksu:s0") || contextExists("u:object_r:ksu_file:s0")
-                || Sel.checkAccess("u:r:kernel:s0", "u:object_r:adb_data_file:s0", "file", "read")
-                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:ksu_file:s0", "file", "read")) {
+        if (SELinux.contextExists("u:r:ksu:s0") || SELinux.contextExists("u:object_r:ksu_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:kernel:s0", "u:object_r:adb_data_file:s0", "file", "read")) {
             sb.append("found KernelSU; ");
         }
-        if (contextExists("u:r:apd:s0") || contextExists("u:object_r:apd_exec:s0")
-                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:apd_exec:s0", "file", "execute")) {
+        if (SELinux.contextExists("u:r:apd:s0") || SELinux.contextExists("u:object_r:apd_exec:s0")) {
             sb.append("found APatch; ");
         }
-        if (contextExists("u:object_r:lsposed_file:s0")
-                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:lsposed_file:s0", "file", "read")
-                || Sel.checkAccess("u:r:system_server:s0", "u:object_r:apk_data_file:s0", "file", "execute")) {
+        if (SELinux.contextExists("u:object_r:lsposed_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:system_server:s0", "u:object_r:apk_data_file:s0", "file", "execute")) {
             sb.append("found LSPosed; ");
         }
-        if (contextExists("u:object_r:xposed_data:s0") || contextExists("u:object_r:xposed_file:s0")
-                || Sel.checkAccess("u:r:untrusted_app:s0", "u:object_r:xposed_data:s0", "file", "read")
-                || Sel.checkAccess("u:r:dex2oat:s0", "u:object_r:dex2oat_exec:s0", "file", "execute_no_trans")) {
+        if (SELinux.contextExists("u:object_r:xposed_data:s0") || SELinux.contextExists("u:object_r:xposed_file:s0")
+                || SELinux.checkSELinuxAccess("u:r:dex2oat:s0", "u:object_r:dex2oat_exec:s0", "file", "execute_no_trans")) {
             sb.append("found Xposed; ");
         }
-        if (Sel.checkAccess("u:r:zygote:s0", "u:object_r:adb_data_file:s0", "dir", "search")) {
+        if (SELinux.checkSELinuxAccess("u:r:zygote:s0", "u:object_r:adb_data_file:s0", "dir", "search")) {
             sb.append("found ZygiskNext; ");
+        }
+
+        try {
+            var buffer = SELinux.readStatus();
+            int version = buffer.getInt(0);
+            if (version != 1) {
+                return "ERROR: unknown status version: " + version;
+            }
+            int sequence = buffer.getInt(4);
+            int policyload = buffer.getInt(12);
+            if (!(isNewKernel() ? sequence == 4 : sequence == 0)) {
+                sb.append("sequence=").append(sequence).append("; ");
+            }
+            try {
+                var avd = SELinux.access("u:r:untrusted_app:s0", "u:r:untrusted_app:s0", 0);
+                var avdSeqNo = Integer.parseUnsignedInt(avd[4]);
+                if (avdSeqNo != 1) {
+                    sb.append("avdSeqNo=").append(avdSeqNo).append("; ");
+                }
+            } catch (ErrnoException e) {
+                throw new RuntimeException(e);
+            }
+        } catch (RuntimeException e) {
+            // status/access probes are informational; ignore if unreadable.
+            Log.w(TAG, "status probe: " + e.getMessage());
         }
 
         if (sb.length() == 0) {
@@ -180,99 +177,76 @@ public final class AppZygote implements ZygotePreload {
     }
 
     // ---------------------------------------------------------------------
-    //  contextExists -- strict EINVAL/EPERM semantics
+    //  SELinux context-validity oracle
     // ---------------------------------------------------------------------
+    //
+    //  Asks the live kernel policy whether a root framework's SELinux footprint
+    //  is present, using the same direct-selinuxfs primitives. contextExists()
+    //  is the context-validity oracle proper: writing a context to
+    //  /sys/fs/selinux/context (plus the two fallback probes) tells us whether
+    //  the type is in the loaded policy. For KernelSU we additionally consult a
+    //  merged AVC allow rule (untrusted_app -> ksu:binder call), which catches
+    //  variants whose type exists but never forms a valid full context.
+    //
+    //  A negative-control sentinel that no real policy can contain must be
+    //  rejected first; if the oracle accepts it, it is rubber-stamping and we
+    //  emit no verdict.
 
-    private static boolean contextExists(String context) {
-        byte[] data = context.getBytes(StandardCharsets.UTF_8);
-
-        // Probe 1: security:check_context via /sys/fs/selinux/context.
-        // Success     -> context exists in policy.
-        // EINVAL      -> type not in loaded policy -> continue.
-        // Other errno -> SELinux is in an unexpected state -> throw (ERROR).
-        try (FileOutputStream file = new FileOutputStream("/sys/fs/selinux/context")) {
-            Os.write(file.getFD(), data, 0, data.length);
-            return true;
-        } catch (ErrnoException e) {
-            if (e.errno != OsConstants.EINVAL) {
-                throw new RuntimeException("security_check_context errno=" + e.errno, e);
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("security_check_context: " + e.getMessage(), e);
+    private static String runContextValidityOracle() {
+        if (!SELinux.isSELinuxEnabled()) {
+            return "ERROR: SELinux is disabled";
+        }
+        var context = SELinux.getContext();
+        if (context == null || !context.startsWith("u:r:app_zygote:s0")) {
+            return "ERROR: carrier is not app_zygote: " + context;
+        }
+        if (!SELinux.isSELinuxEnforced()) {
+            return "ERROR: SELinux is permissive";
         }
 
-        // Probe 2: dyntransition allowed -> type exists.
-        if (Sel.checkAccess("u:r:app_zygote:s0", context, "process", "dyntransition")) {
-            return true;
+        // Self-test: an impossible sentinel context must be rejected.
+        if (contextExistsQuiet("u:r:rootdetector_oracle_sentinel_9x3q:s0")
+                || contextExistsQuiet("u:object_r:rootdetector_oracle_sentinel_9x3q_file:s0")) {
+            return "ERROR: oracle self-test failed (sentinel context accepted)";
         }
 
-        // Probe 3: process:setcurrent via /proc/self/attr/current. Kernel
-        // validates the context first (EINVAL if invalid) then dyntransition
-        // (EPERM if denied). A successful write would mean the kernel is
-        // bypassed -> we throw to surface that as ERROR.
-        try (FileOutputStream current = new FileOutputStream("/proc/self/attr/current")) {
-            Os.write(current.getFD(), data, 0, data.length);
-            throw new RuntimeException("SELinux broken: setcon to '" + context + "' succeeded");
-        } catch (ErrnoException e) {
-            if (e.errno == OsConstants.EINVAL) return false;
-            if (e.errno == OsConstants.EPERM)  return true;
-            throw new RuntimeException("setcon errno=" + e.errno, e);
-        } catch (IOException e) {
-            throw new RuntimeException("setcon: " + e.getMessage(), e);
+        var found = new LinkedHashSet<String>();
+        if (contextExistsQuiet("u:r:ksu:s0") || contextExistsQuiet("u:object_r:ksu_file:s0")
+                || accessQuiet("u:r:untrusted_app:s0", "u:r:ksu:s0", "binder", "call")) {
+            found.add("KernelSU");
+        }
+        if (contextExistsQuiet("u:r:magisk:s0") || contextExistsQuiet("u:object_r:magisk_file:s0")) {
+            found.add("Magisk");
+        }
+        if (contextExistsQuiet("u:r:apd:s0") || contextExistsQuiet("u:object_r:apd_exec:s0")) {
+            found.add("APatch");
+        }
+        if (contextExistsQuiet("u:object_r:lsposed_file:s0")) {
+            found.add("LSPosed");
+        }
+
+        if (!found.isEmpty()) {
+            return "ROOT: " + String.join(", ", found) + " via SELinux context validity oracle";
+        }
+        return "CLEAN: no root SELinux contexts found in live policy";
+    }
+
+    /** contextExists() that swallows an unexpected-errno throw as "not found". */
+    private static boolean contextExistsQuiet(String context) {
+        try {
+            return SELinux.contextExists(context);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "contextExists(" + context + "): " + e.getMessage());
+            return false;
         }
     }
 
-    // ---------------------------------------------------------------------
-    //  android.os.SELinux reflection wrapper
-    // ---------------------------------------------------------------------
-
-    private static final class Sel {
-        private static final Class<?> CLS;
-        private static final Method M_IS_ENABLED;
-        private static final Method M_IS_ENFORCED;
-        private static final Method M_GET_CONTEXT;
-        private static final Method M_GET_PID_CONTEXT;
-        private static final Method M_GET_FILE_CONTEXT;
-        private static final Method M_CHECK_ACCESS;
-
-        static {
-            try {
-                CLS = Class.forName("android.os.SELinux");
-                M_IS_ENABLED       = CLS.getMethod("isSELinuxEnabled");
-                M_IS_ENFORCED      = CLS.getMethod("isSELinuxEnforced");
-                M_GET_CONTEXT      = CLS.getMethod("getContext");
-                M_GET_PID_CONTEXT  = CLS.getMethod("getPidContext", int.class);
-                M_GET_FILE_CONTEXT = CLS.getMethod("getFileContext", String.class);
-                M_CHECK_ACCESS     = CLS.getMethod("checkSELinuxAccess",
-                        String.class, String.class, String.class, String.class);
-            } catch (Throwable t) {
-                throw new RuntimeException("SELinux reflection setup failed: " + t.getMessage(), t);
-            }
-        }
-
-        static boolean isEnabled() {
-            try { return (Boolean) M_IS_ENABLED.invoke(null); }
-            catch (Throwable t) { return false; }
-        }
-        static boolean isEnforced() {
-            try { return (Boolean) M_IS_ENFORCED.invoke(null); }
-            catch (Throwable t) { return false; }
-        }
-        static String getContext() {
-            try { return (String) M_GET_CONTEXT.invoke(null); }
-            catch (Throwable t) { return null; }
-        }
-        static String getPidContext(int pid) {
-            try { return (String) M_GET_PID_CONTEXT.invoke(null, pid); }
-            catch (Throwable t) { return null; }
-        }
-        static String getFileContext(String path) {
-            try { return (String) M_GET_FILE_CONTEXT.invoke(null, path); }
-            catch (Throwable t) { return null; }
-        }
-        static boolean checkAccess(String src, String tgt, String cls, String perm) {
-            try { return Boolean.TRUE.equals(M_CHECK_ACCESS.invoke(null, src, tgt, cls, perm)); }
-            catch (Throwable t) { return false; }
+    private static boolean accessQuiet(String scon, String tcon, String tclass, String perm) {
+        try {
+            return SELinux.checkSELinuxAccess(scon, tcon, tclass, perm);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "checkSELinuxAccess: " + e.getMessage());
+            return false;
         }
     }
 }
