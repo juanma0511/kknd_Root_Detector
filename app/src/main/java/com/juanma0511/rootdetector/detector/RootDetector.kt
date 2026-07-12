@@ -133,7 +133,11 @@ class RootDetector(private val context: Context) {
             ::checkDataLocalTmp,
             ::checkResetpropModifications,
             ::checkAppZygoteSepolicy,
-            ::checkContextValidityOracle
+            ::checkContextValidityOracle,
+            ::checkSceneDebugfsMount,
+            ::checkNeoZygiskEnv,
+            ::checkSKRoot,
+            ::checkSelinuxSeqnoOracle
         )
         val items = mutableListOf<DetectionItem>()
         val total = checks.size + 1 
@@ -161,8 +165,8 @@ class RootDetector(private val context: Context) {
         val (regularFound, _) = splitOplusMatches(found)
         val severity = when {
             DetectorTrust.suBinaryCorroborated(regularFound) -> Severity.HIGH
-            DetectorTrust.suBinaryIsOemBenign(regularFound) -> Severity.LOW
-            else -> Severity.MEDIUM
+            DetectorTrust.suBinaryIsOemBenign(regularFound) -> Severity.WARNING
+            else -> Severity.WARNING
         }
         return listOf(det(
             "su_binary", "SU Binary Paths", DetectionCategory.SU_BINARIES, severity,
@@ -199,7 +203,7 @@ class RootDetector(private val context: Context) {
         }
         val (regularFound, _) = splitOplusMatches(found)
         return listOf(det(
-            "patched_apps", "Patched / Modified Apps", DetectionCategory.ROOT_APPS, Severity.MEDIUM,
+            "patched_apps", "Patched / Modified Apps", DetectionCategory.ROOT_APPS, Severity.WARNING,
             "ReVanced, CorePatch, Play Integrity Fix, TrickyStore, HMA, LSPosed and companion tools",
             regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
         ))
@@ -231,7 +235,7 @@ class RootDetector(private val context: Context) {
             }
         }
         return listOf(det(
-            "medium_risk_tools", "App Patchers / Mod Tools", DetectionCategory.ROOT_APPS, Severity.MEDIUM,
+            "medium_risk_tools", "App Patchers / Mod Tools", DetectionCategory.ROOT_APPS, Severity.WARNING,
             "Detects medium-risk app patching and modification tools such as Lucky Patcher",
             found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
         ))
@@ -247,7 +251,7 @@ class RootDetector(private val context: Context) {
             }
         }
         return listOf(det(
-            "warning_apps", "Non-Rooted Power Apps", DetectionCategory.ROOT_APPS, Severity.LOW,
+            "warning_apps", "Non-Rooted Power Apps", DetectionCategory.ROOT_APPS, Severity.WARNING,
             "Shizuku, Termux, MT Manager, LADB and similar tools are not root by themselves, but they are useful for debugging, shell access and package editing",
             found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
         ))
@@ -256,7 +260,7 @@ class RootDetector(private val context: Context) {
     private fun checkBuildTags(): List<DetectionItem> {
         val tags = Build.TAGS ?: ""
         return listOf(det(
-            "build_tags", "Build Tags (test-keys)", DetectionCategory.BUILD_TAGS, Severity.MEDIUM,
+            "build_tags", "Build Tags (test-keys)", DetectionCategory.BUILD_TAGS, Severity.WARNING,
             "Release builds must use release-keys, not test-keys",
             tags.contains("test-keys"), "Build.TAGS=$tags"
         ))
@@ -365,7 +369,7 @@ class RootDetector(private val context: Context) {
             }
         } catch (_: Exception) {}
         return listOf(det(
-            "oplus_dirs", "Oplus / OplusEx Directories", DetectionCategory.MOUNT_POINTS, Severity.LOW,
+            "oplus_dirs", "Oplus / OplusEx Directories", DetectionCategory.MOUNT_POINTS, Severity.WARNING,
             "Directories and mount entries containing oplu or oplusex are treated as low severity unless direct root markers also appear",
             found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
         ))
@@ -427,38 +431,49 @@ class RootDetector(private val context: Context) {
     }
 
     private fun checkEmulator(): List<DetectionItem> {
-        val indicators = mutableListOf<String>()
+        val strong = mutableListOf<String>()
+        val weak = mutableListOf<String>()
         val fp = Build.FINGERPRINT ?: ""
-        if (fp.startsWith("generic") || fp.contains(":generic/") || fp.contains("unknown/unknown"))
-            indicators += "FINGERPRINT=$fp"
+
+        // Strong indicators: unambiguous emulator signatures that stock retail
+        // devices never report. Any one of these alone is conclusive.
+        if (fp.startsWith("generic") || fp.contains(":generic/"))
+            strong += "FINGERPRINT=$fp"
         if (Build.HARDWARE == "goldfish" || Build.HARDWARE == "ranchu")
-            indicators += "HARDWARE=${Build.HARDWARE}"
+            strong += "HARDWARE=${Build.HARDWARE}"
         if (Build.MANUFACTURER.equals("Genymotion", ignoreCase = true))
-            indicators += "MANUFACTURER=Genymotion"
+            strong += "MANUFACTURER=Genymotion"
         if (Build.PRODUCT in emulatorProducts)
-            indicators += "PRODUCT=${Build.PRODUCT}"
-        if (Build.BRAND.equals("generic", ignoreCase = true) || Build.BRAND.equals("Android", ignoreCase = true))
-            indicators += "BRAND=${Build.BRAND}"
-        if (Build.DEVICE.equals("generic", ignoreCase = true) || Build.DEVICE.startsWith("generic_"))
-            indicators += "DEVICE=${Build.DEVICE}"
+            strong += "PRODUCT=${Build.PRODUCT}"
         if (Build.MODEL.contains("Android SDK built for", ignoreCase = true) ||
             (Build.MODEL.contains("sdk", ignoreCase = true) && Build.MODEL.contains("emulator", ignoreCase = true)))
-            indicators += "MODEL=${Build.MODEL}"
+            strong += "MODEL=${Build.MODEL}"
+        if (getProp("ro.kernel.qemu") == "1") strong += "ro.kernel.qemu=1"
+        if (getProp("ro.boot.qemu") == "1") strong += "ro.boot.qemu=1"
+
+        // Weak indicators: each one alone shows up on plenty of legitimate retail
+        // devices (empty/unknown BOARD, "Android" brand, x86 tablets), so they
+        // only count as a detection when at least two corroborate.
+        if (Build.BRAND.equals("generic", ignoreCase = true) || Build.BRAND.equals("Android", ignoreCase = true))
+            weak += "BRAND=${Build.BRAND}"
+        if (Build.DEVICE.equals("generic", ignoreCase = true) || Build.DEVICE.startsWith("generic_"))
+            weak += "DEVICE=${Build.DEVICE}"
         if (Build.BOARD.isNullOrEmpty() || Build.BOARD == "unknown")
-            indicators += "BOARD=${Build.BOARD} (unknown board)"
-        val qemuProp = getProp("ro.kernel.qemu")
-        if (qemuProp == "1") indicators += "ro.kernel.qemu=1"
-        val bootQemuProp = getProp("ro.boot.qemu")
-        if (bootQemuProp == "1") indicators += "ro.boot.qemu=1"
+            weak += "BOARD=${Build.BOARD} (unknown board)"
+        if (fp.contains("unknown/unknown"))
+            weak += "FINGERPRINT=$fp"
         val cpuAbi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
         if (cpuAbi.contains("x86") && Build.HARDWARE != null &&
             !Build.HARDWARE.contains("x86", ignoreCase = true) &&
             Build.BRAND.equals("generic", ignoreCase = true))
-            indicators += "CPU_ABI=$cpuAbi on generic-branded device"
+            weak += "CPU_ABI=$cpuAbi on generic-branded device"
+
+        val detected = strong.isNotEmpty() || weak.size >= 2
+        val indicators = strong + weak
         return listOf(det(
-            "emulator", "Emulator / Virtual Device", DetectionCategory.EMULATOR, Severity.MEDIUM,
-            "Checks fingerprint, hardware, brand, device, model, board, QEMU props and CPU ABI for emulator indicators",
-            indicators.isNotEmpty(), indicators.joinToString("\n").ifEmpty { null }
+            "emulator", "Emulator / Virtual Device", DetectionCategory.EMULATOR, Severity.WARNING,
+            "Flags an emulator on any strong QEMU/SDK signature, or when at least two weak build-field indicators corroborate. A single weak signal such as an unknown BOARD or an \"Android\" brand is ignored to avoid false positives on retail devices.",
+            detected, indicators.joinToString("\n").ifEmpty { null }
         ))
     }
 
@@ -497,7 +512,7 @@ class RootDetector(private val context: Context) {
         val fp = Build.FINGERPRINT ?: ""
         val detected = fp.contains("test-keys") || fp.contains("dev-keys")
         return listOf(det(
-            "test_keys", "Test/Dev Keys in Fingerprint", DetectionCategory.BUILD_TAGS, Severity.MEDIUM,
+            "test_keys", "Test/Dev Keys in Fingerprint", DetectionCategory.BUILD_TAGS, Severity.WARNING,
             "Build.FINGERPRINT should not contain test-keys or dev-keys",
             detected, if (detected) fp else null
         ))
@@ -664,7 +679,7 @@ class RootDetector(private val context: Context) {
         }
         val severity = when {
             isSuidOrExec -> Severity.HIGH
-            else         -> Severity.LOW
+            else         -> Severity.WARNING
         }
         return listOf(det(
             "su_in_path", "SU in \$PATH", DetectionCategory.SU_BINARIES, severity,
@@ -707,7 +722,7 @@ class RootDetector(private val context: Context) {
         //   "ERROR: ..."    -> sanity gate failed, API broken, or service
         //                      unavailable. NOT a detection (informational).
         val isWarning = result.startsWith("WARNING:")
-        val severity  = if (isWarning) Severity.HIGH else Severity.LOW
+        val severity  = if (isWarning) Severity.HIGH else Severity.WARNING
         return listOf(det(
             "app_zygote_sepolicy",
             "SELinux Policy Tampering (App-Zygote)",
@@ -731,7 +746,7 @@ class RootDetector(private val context: Context) {
         //   "CLEAN: ..."  -> no root SELinux contexts in live policy
         //   "ERROR: ..."  -> gate/self-test failure or service issue (informational).
         val isRoot = result.startsWith("ROOT:")
-        val severity = if (isRoot) Severity.HIGH else Severity.LOW
+        val severity = if (isRoot) Severity.HIGH else Severity.WARNING
         return listOf(det(
             "context_validity_oracle",
             "SELinux Context Validity Oracle (App-Zygote)",
@@ -1073,7 +1088,7 @@ class RootDetector(private val context: Context) {
             "env_hooks",
             "Environment Hooking",
             DetectionCategory.MAGISK,
-            Severity.MEDIUM,
+            Severity.WARNING,
             "Suspicious preload, linker and classpath values leaking root frameworks or injected files",
             suspicious.isNotEmpty(),
             suspicious.joinToString("\n").ifEmpty { null }
@@ -1156,7 +1171,7 @@ class RootDetector(private val context: Context) {
                 "overlayfs",
                 "OverlayFS System Modification",
                 DetectionCategory.MAGISK,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Detects overlay-backed system mounts, Magisk magic mount traces and /data/adb-backed overlays",
                 overlays.isNotEmpty(),
                 overlays.joinToString("\n").ifEmpty { null }
@@ -1247,7 +1262,7 @@ class RootDetector(private val context: Context) {
                 "kernel_patch_window",
                 "Kernel / Patch Window",
                 DetectionCategory.SYSTEM_PROPS,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Checks whether kernel build date is consistent with system build and security patch dates",
                 false, null
             ))
@@ -1305,7 +1320,7 @@ class RootDetector(private val context: Context) {
             "kernel_patch_window",
             "Kernel / Patch Window Mismatch",
             DetectionCategory.SYSTEM_PROPS,
-            Severity.MEDIUM,
+            Severity.WARNING,
             "Kernel build date is unusually far from all security patch dates — indicates a mismatched kernel from a different build cycle",
             staleness.isNotEmpty(),
             staleness.joinToString("\n").ifEmpty { null }
@@ -1407,7 +1422,7 @@ class RootDetector(private val context: Context) {
                 "env_scan",
                 "Environment Variable Scan",
                 DetectionCategory.MAGISK,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Environment variables leaking root frameworks, adb staging paths or hidden overlays",
                 suspicious.isNotEmpty(),
                 suspicious.joinToString("\n").ifEmpty { null }
@@ -1880,7 +1895,7 @@ class RootDetector(private val context: Context) {
                 "lineage_services",
                 "LineageOS Services",
                 DetectionCategory.CUSTOM_ROM,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Scans binder service list for LineageOS hardware, health, livedisplay and touch services",
                 detected.isNotEmpty(),
                 detected.take(10).joinToString("\n").ifEmpty { null }
@@ -1902,7 +1917,7 @@ class RootDetector(private val context: Context) {
                 "lineage_permissions",
                 "LineageOS Platform Permissions",
                 DetectionCategory.CUSTOM_ROM,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Checks for LineageOS-specific platform permissions exposed by the framework",
                 detected.isNotEmpty(),
                 detected.joinToString("\n").ifEmpty { null }
@@ -1922,7 +1937,7 @@ class RootDetector(private val context: Context) {
                 "lineage_files",
                 "LineageOS Init / Framework Files",
                 DetectionCategory.CUSTOM_ROM,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Checks for LineageOS init rc, platform xml and framework jar artifacts",
                 detected.isNotEmpty(),
                 detected.joinToString("\n").ifEmpty { null }
@@ -1947,7 +1962,7 @@ class RootDetector(private val context: Context) {
                 "lineage_sepolicy",
                 "LineageOS Sepolicy Traces",
                 DetectionCategory.CUSTOM_ROM,
-                Severity.MEDIUM,
+                Severity.WARNING,
                 "Scans readable sepolicy cil files for repeated lineage markers",
                 detected.isNotEmpty(),
                 detected.joinToString("\n").ifEmpty { null }
@@ -1976,36 +1991,26 @@ class RootDetector(private val context: Context) {
             "BRAND" to (android.os.Build.BRAND ?: ""),
             "MANUFACTURER" to (android.os.Build.MANUFACTURER ?: "")
         )
+        // Only distinctive ROM tokens. Common English words that also name real
+        // retail devices or appear in stock build descriptions ("spark", "bliss",
+        // "voltage", "rising", "ancient", "blaze", "elixir", "superior",
+        // "awaken", "cherish", "afterlife", "nameless", "matrixx", "paranoid")
+        // were removed — they produced false positives on stock hardware such as
+        // the Tecno Spark line.
         val searchableKeywords = setOf(
             "lineage",
             "crdroid",
-            "evolution",
             "evox",
             "pixelos",
             "yaap",
             "pixel experience",
             "pixelexperience",
             "derpfest",
-            "rising",
-            "matrixx",
-            "nameless",
             "aicp",
-            "ancient",
-            "afterlife",
-            "cherish",
-            "bliss",
-            "spark",
-            "superior",
-            "elixir",
             "projectelixir",
-            "voltage",
             "alpha droid",
             "alphadroid",
-            "project blaze",
-            "blaze",
-            "paranoid",
             "syberia",
-            "awaken",
             "pixys",
             "phhgsi"
         )
@@ -2042,7 +2047,7 @@ class RootDetector(private val context: Context) {
 
         val detected = strongSignals > 0 || indicators.size >= 2
         return listOf(det(
-            "custom_rom", "Aftermarket ROM", DetectionCategory.CUSTOM_ROM, Severity.MEDIUM,
+            "custom_rom", "Aftermarket ROM", DetectionCategory.CUSTOM_ROM, Severity.WARNING,
             "Looks for custom ROM props, framework files and stronger build identifiers from popular aftermarket ROMs",
             detected, indicators.joinToString("\n").ifEmpty { null }
         ))
@@ -2092,7 +2097,7 @@ class RootDetector(private val context: Context) {
         }
         return listOf(det(
             "su_timestamps", "Recent Root Artifact Timestamps", DetectionCategory.MAGISK,
-            if (highHit) Severity.HIGH else Severity.MEDIUM,
+            if (highHit) Severity.HIGH else Severity.WARNING,
             "Root artifacts modified within the last 30 days indicate active root installation",
             suspicious.isNotEmpty(), suspicious.joinToString("\n").ifEmpty { null }
         ))
@@ -2324,23 +2329,29 @@ class RootDetector(private val context: Context) {
     }
 
     private fun checkDeveloperOptions(): List<DetectionItem> {
-        val evidence = linkedSetOf<String>()
+        val tamperSignals = linkedSetOf<String>()
+        val prerequisites = linkedSetOf<String>()
         try {
             val cr = context.contentResolver
             if (Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1)
-                evidence += "developer options enabled"
+                prerequisites += "developer options enabled"
             if (Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1)
-                evidence += "USB debugging (ADB) enabled"
+                prerequisites += "USB debugging (ADB) enabled"
             if (Settings.Global.getInt(cr, "oem_unlock_allowed_by_user", -1) == 1)
-                evidence += "OEM unlock allowed by user"
+                tamperSignals += "OEM unlock allowed by user"
             if (Settings.Global.getInt(cr, "mock_location", -1) == 1)
-                evidence += "mock location enabled"
+                tamperSignals += "mock location enabled"
         } catch (_: Exception) {}
+        // Developer mode and USB debugging are near-universal among developers and
+        // power users and are not tampering by themselves, so they are reported as
+        // context only. Detection fires on the tamper-relevant toggles (OEM unlock,
+        // mock location).
+        val evidence = tamperSignals + prerequisites
         return listOf(det(
             "developer_options", "Developer Options / USB Debugging",
-            DetectionCategory.SYSTEM_PROPS, Severity.MEDIUM,
-            "Developer mode, ADB access and OEM unlock are prerequisites for rooting and runtime tampering",
-            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+            DetectionCategory.SYSTEM_PROPS, Severity.WARNING,
+            "OEM unlock and mock location are tamper-relevant and trigger detection. Plain developer mode and USB debugging are shown as context but do not count as a detection.",
+            tamperSignals.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
     }
 
@@ -2371,7 +2382,7 @@ class RootDetector(private val context: Context) {
         return listOf(det(
             "su_directory", "SU Directory Structure",
             DetectionCategory.SU_BINARIES,
-            if (hasPropEvidence) Severity.HIGH else Severity.MEDIUM,
+            if (hasPropEvidence) Severity.HIGH else Severity.WARNING,
             "Checks the /su directory hierarchy created by SuperSU and legacy root methods, and reads SuperSU system props",
             evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
@@ -2398,7 +2409,7 @@ class RootDetector(private val context: Context) {
         }
         return listOf(det(
             "sdcard_artifacts", "Root Tool Artifacts on External Storage",
-            DetectionCategory.MAGISK, Severity.MEDIUM,
+            DetectionCategory.MAGISK, Severity.WARNING,
             "TWRP, SuperSU, Magisk, KernelSU and APatch files on external storage — common residues of sideloaded root",
             evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
@@ -2418,7 +2429,7 @@ class RootDetector(private val context: Context) {
         }
         return listOf(det(
             "recovery_artifacts", "Custom Recovery Artifacts",
-            DetectionCategory.MAGISK, Severity.MEDIUM,
+            DetectionCategory.MAGISK, Severity.WARNING,
             "Leftover files from TWRP, OrangeFox and other custom recoveries used for flashing root",
             evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
@@ -2443,7 +2454,7 @@ class RootDetector(private val context: Context) {
         }
         return listOf(det(
             "init_dotd", "init.d / su.d Boot Scripts",
-            DetectionCategory.MAGISK, Severity.MEDIUM,
+            DetectionCategory.MAGISK, Severity.WARNING,
             "/etc/init.d and /system/su.d directories are used by SuperSU and custom root setups to persist scripts across reboots",
             evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
         ))
@@ -2572,9 +2583,148 @@ class RootDetector(private val context: Context) {
             }
         } catch (_: Exception) {}
         return listOf(det(
-            "install_source", "APK Install Source", DetectionCategory.BUILD_TAGS, Severity.LOW,
+            "install_source", "APK Install Source", DetectionCategory.BUILD_TAGS, Severity.WARNING,
             "Apps installed via ADB or sideloading may indicate a developer or testing environment",
             suspicious.isNotEmpty(), suspicious.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSceneDebugfsMount(): List<DetectionItem> {
+        // Scene 9.3.0 (com.omarea.vtools) mounts a private debugfs at
+        // /dev/<hash>/debug and drops a marker file /dev/<hash>/scene_mode_category.
+        // The hash directory is 8 lowercase letters (or "_" + 7). The mount is
+        // kernel-visible in /proc/self/mountinfo, so it cannot be hidden from the
+        // app without also hiding it from the kernel mount table.
+        val hashRegex = Regex("^/([a-z]{8}|_[a-z]{7})/debug$")
+        val hashes = linkedSetOf<String>()
+        runCatching {
+            File("/proc/self/mountinfo").useLines { lines ->
+                lines.forEach { line ->
+                    val fields = line.split(" ")
+                    val sep = fields.indexOf("-")
+                    if (sep == -1 || fields.size < 5) return@forEach
+                    if (fields.getOrNull(sep + 1) == "debugfs") {
+                        val mountPoint = fields[4].removePrefix("/dev")
+                        hashRegex.matchEntire(mountPoint)?.groupValues?.getOrNull(1)?.let { hashes += it }
+                    }
+                }
+            }
+        }
+        runCatching {
+            File("/proc/self/mounts").useLines { lines ->
+                lines.forEach { line ->
+                    val parts = line.split(" ")
+                    if (parts.size >= 3 && parts[2] == "debugfs") {
+                        val mountPoint = parts[1].removePrefix("/dev")
+                        hashRegex.matchEntire(mountPoint)?.groupValues?.getOrNull(1)?.let { hashes += it }
+                    }
+                }
+            }
+        }
+        val evidence = linkedSetOf<String>()
+        hashes.forEach { hash ->
+            val marker = File("/dev/$hash/scene_mode_category")
+            if (marker.exists()) evidence += marker.path
+        }
+        return listOf(det(
+            "scene_debugfs", "Scene Dynamic debugfs Mount", DetectionCategory.ROOT_APPS, Severity.HIGH,
+            "Scene 9.3.0 mounts a debugfs under /dev/<hash>/debug and drops a scene_mode_category marker. Requires both the debugfs mount and the marker file so unrelated debugfs mounts are ignored.",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkNeoZygiskEnv(): List<DetectionItem> {
+        val evidence = linkedSetOf<String>()
+        fun isZygiskTmp(value: String): Boolean {
+            val lower = value.lowercase()
+            return lower.contains("/data/adb") && lower.contains("zygisk")
+        }
+        System.getenv("TMP_PATH")?.let { if (isZygiskTmp(it)) evidence += "TMP_PATH=$it" }
+        runCatching {
+            File("/proc/self/environ").readBytes().toString(Charsets.ISO_8859_1)
+                .split(" ").forEach { entry ->
+                    if (entry.startsWith("TMP_PATH=") && isZygiskTmp(entry)) evidence += entry.take(120)
+                }
+        }
+        return listOf(det(
+            "neozygisk_env", "NeoZygisk Environment Marker", DetectionCategory.MAGISK, Severity.HIGH,
+            "NeoZygisk leaks its working directory into the TMP_PATH environment variable (points into /data/adb/…zygisk). The variable is inherited by injected app processes and requires /data/adb + zygisk to match.",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSKRoot(): List<DetectionItem> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        val pkg = "com.linux.permissionmanager"
+        when {
+            isPackageInstalled(pm, pkg) -> found += "$pkg (SKRoot)"
+            pm.getLaunchIntentForPackage(pkg) != null -> found += "$pkg (SKRoot, launchable)"
+        }
+        return listOf(det(
+            "skroot", "SKRoot Kernel Root Manager", DetectionCategory.ROOT_APPS, Severity.HIGH,
+            "Detects the SKRoot kernel-level root manager package com.linux.permissionmanager",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSelinuxSeqnoOracle(): List<DetectionItem> {
+        // Reads the kernel-owned SELinux status page (/sys/fs/selinux/status) and
+        // cross-checks its policyload counter against the seqno the kernel used for
+        // a live access decision (/sys/fs/selinux/access). A root framework that
+        // hot-reloads a modified policy (dirty sepolicy) bumps the policyload
+        // counter out of step with the access seqno. The status page is kernel
+        // memory and cannot be spoofed from userspace without patching the kernel.
+        // Only a confirmed seqno split counts as a detection; when the access
+        // oracle is not reachable from the app domain the result is informational.
+        fun le32(bytes: ByteArray, off: Int): Long =
+            (bytes[off].toLong() and 0xff) or
+                ((bytes[off + 1].toLong() and 0xff) shl 8) or
+                ((bytes[off + 2].toLong() and 0xff) shl 16) or
+                ((bytes[off + 3].toLong() and 0xff) shl 24)
+
+        val status = runCatching {
+            val buffer = ByteArray(20)
+            val count = java.io.FileInputStream("/sys/fs/selinux/status").use { it.read(buffer) }
+            if (count < 20) null else buffer
+        }.getOrNull()
+
+        if (status == null) {
+            return listOf(det(
+                "selinux_seqno", "SELinux Policyload Seqno Oracle", DetectionCategory.SYSTEM_PROPS, Severity.WARNING,
+                "Cross-checks the kernel SELinux status page policyload counter against the live access-decision seqno; a split indicates a runtime policy reload (dirty sepolicy).",
+                false, null
+            ))
+        }
+
+        val sequence = le32(status, 4)
+        val policyload = le32(status, 12)
+
+        // Odd sequence means the kernel is mid-update and the page is unstable.
+        val accessSeqno = if (sequence % 2L == 0L) runCatching {
+            val processClass = java.io.FileInputStream("/sys/fs/selinux/class/process/index")
+                .use { it.bufferedReader().readText().trim().toInt() }
+            java.io.RandomAccessFile("/sys/fs/selinux/access", "rw").use { file ->
+                file.write("u:r:untrusted_app:s0 u:r:untrusted_app:s0 $processClass".toByteArray(Charsets.US_ASCII))
+                file.seek(0)
+                val response = ByteArray(256)
+                val n = file.read(response)
+                if (n <= 0) null
+                else String(response, 0, n, Charsets.US_ASCII).trim()
+                    .split(Regex("\\s+")).getOrNull(4)?.toLongOrNull()
+            }
+        }.getOrNull() else null
+
+        val suspicious = accessSeqno != null && policyload > 0L && accessSeqno > 0L && policyload != accessSeqno
+        val detail = buildString {
+            append("status.sequence=$sequence status.policyload=$policyload")
+            append(if (accessSeqno != null) " access.seqno=$accessSeqno" else " access.seqno=<unavailable from app domain>")
+        }
+        return listOf(det(
+            "selinux_seqno", "SELinux Policyload Seqno Oracle", DetectionCategory.SYSTEM_PROPS,
+            if (suspicious) Severity.HIGH else Severity.WARNING,
+            "Cross-checks the kernel SELinux status page policyload counter against the live access-decision seqno. A split means a policy was hot-reloaded at runtime (dirty sepolicy). Only a confirmed split counts as a detection.",
+            suspicious, if (suspicious) detail else null
         ))
     }
 

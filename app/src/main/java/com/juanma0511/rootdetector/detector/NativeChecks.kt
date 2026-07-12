@@ -53,7 +53,7 @@ class NativeChecks {
                     name = "Native checks error",
                     description = e.message ?: "Unknown native error",
                     category = DetectionCategory.MAGISK,
-                    severity = Severity.LOW,
+                    severity = Severity.WARNING,
                     detected = false,
                     detail = e.message
                 )
@@ -110,7 +110,7 @@ class NativeChecks {
         name.contains("uid=0", ignoreCase = true)           -> Severity.HIGH
         name.contains("Custom ROM", ignoreCase = true) ||
         name.contains("Bootloader", ignoreCase = true) ||
-        name.contains("PTY", ignoreCase = true)             -> Severity.MEDIUM
+        name.contains("PTY", ignoreCase = true)             -> Severity.WARNING
         else                                                 -> Severity.HIGH
     }
 }

@@ -19,7 +19,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.juanma0511.rootdetector.ui.*
 
@@ -93,14 +97,27 @@ fun MainShell(
             )
         }
     ) { padding ->
+        var navBarVisible by remember { mutableStateOf(true) }
+        // Reset visibility when switching tabs so the bar is never stuck hidden.
+        LaunchedEffect(selectedTab) { navBarVisible = true }
+        val navScrollConnection = remember {
+            object : NestedScrollConnection {
+                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    when {
+                        available.y < -3f -> navBarVisible = false  // scrolling down
+                        available.y > 3f  -> navBarVisible = true   // scrolling up
+                    }
+                    return Offset.Zero
+                }
+            }
+        }
         Box(modifier = Modifier
             .padding(top = padding.calculateTopPadding())
-            .fillMaxSize()) {
+            .fillMaxSize()
+            .nestedScroll(navScrollConnection)) {
             AnimatedContent(
                 targetState = selectedTab,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = 88.dp),
+                modifier = Modifier.fillMaxSize(),
                 transitionSpec = {
                     if (targetState > initialState) {
                         slideInHorizontally { it } + fadeIn() togetherWith
@@ -122,18 +139,24 @@ fun MainShell(
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 24.dp, vertical = 12.dp),
-                contentAlignment = Alignment.Center
+            AnimatedVisibility(
+                visible = navBarVisible,
+                enter = slideInVertically { it * 2 } + fadeIn(),
+                exit  = slideOutVertically { it * 2 } + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
             ) {
-                PillNavigationBar(
-                    selectedTab   = selectedTab,
-                    onTabSelected = { selectedTab = it }
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    PillNavigationBar(
+                        selectedTab   = selectedTab,
+                        onTabSelected = { selectedTab = it }
+                    )
+                }
             }
         }
     }
