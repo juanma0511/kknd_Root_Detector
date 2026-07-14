@@ -34,6 +34,12 @@ import androidx.compose.ui.unit.sp
 import com.juanma0511.rootdetector.MainViewModel
 import com.juanma0511.rootdetector.model.*
 
+// Detection palette (see design spec). Light mode uses the spec colors; dark
+// mode brightens the deep maroon/green so they stay legible on #272727.
+fun hardDetectionColor(isDark: Boolean): Color = if (isDark) Color(0xFFE5527A) else Color(0xFFA3122F)
+fun warningColor(isDark: Boolean): Color = if (isDark) Color(0xFFF0C044) else Color(0xFFC68500)
+fun passColor(isDark: Boolean): Color = if (isDark) Color(0xFF3FBE7C) else Color(0xFF157A3C)
+
 @Composable
 fun RootDetectorScreen(viewModel: MainViewModel) {
     val scanState by viewModel.scanState.collectAsState()
@@ -43,7 +49,7 @@ fun RootDetectorScreen(viewModel: MainViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 104.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
@@ -95,14 +101,14 @@ fun StatusHeroCard(
         label = "progress"
     )
 
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val statusColor = when {
         scanResult == null -> MaterialTheme.colorScheme.primary
-        scanResult.isRooted -> MaterialTheme.colorScheme.error
-        scanResult.isSuspicious -> MaterialTheme.colorScheme.tertiary
-        else -> Color(0xFF2E7D32)
+        scanResult.isRooted -> hardDetectionColor(isDark)
+        scanResult.isSuspicious -> warningColor(isDark)
+        else -> passColor(isDark)
     }
 
-    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val containerColor = when {
         scanResult == null  -> if (isDark) Color(0xFF0D1B2E) else Color(0xFFDCE8FF)
         scanResult.isRooted -> if (isDark) Color(0xFF2E0A0A) else Color(0xFFFFDAD6)
@@ -258,30 +264,24 @@ fun SummaryRow(
     selectedSeverity: Severity?,
     onSeverityClick: (Severity) -> Unit
 ) {
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         SummaryChip(
             label = "${result.highRiskCount} High",
-            color = MaterialTheme.colorScheme.error,
+            color = hardDetectionColor(isDark),
             selected = selectedSeverity == Severity.HIGH,
             modifier = Modifier.weight(1f),
             onClick = { onSeverityClick(Severity.HIGH) }
         )
         SummaryChip(
-            label = "${result.mediumRiskCount} Medium",
-            color = MaterialTheme.colorScheme.tertiary,
-            selected = selectedSeverity == Severity.MEDIUM,
+            label = "${result.warningCount} Warning",
+            color = warningColor(isDark),
+            selected = selectedSeverity == Severity.WARNING,
             modifier = Modifier.weight(1f),
-            onClick = { onSeverityClick(Severity.MEDIUM) }
-        )
-        SummaryChip(
-            label = "${result.lowRiskCount} Low",
-            color = MaterialTheme.colorScheme.primary,
-            selected = selectedSeverity == Severity.LOW,
-            modifier = Modifier.weight(1f),
-            onClick = { onSeverityClick(Severity.LOW) }
+            onClick = { onSeverityClick(Severity.WARNING) }
         )
     }
 }
@@ -297,9 +297,9 @@ fun SummaryChip(
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val containerAlpha = when {
         selected && isDark -> 0.32f
-        selected -> 0.2f
+        selected -> 0.30f
         isDark -> 0.2f
-        else -> 0.12f
+        else -> 0.20f
     }
     val borderColor = if (selected) color.copy(alpha = if (isDark) 0.85f else 0.55f) else Color.Transparent
     Surface(
@@ -332,12 +332,10 @@ fun DetectionItemCard(item: DetectionItem) {
     val clipboardManager = LocalClipboardManager.current
 
     val severityColor = when (item.severity) {
-        Severity.HIGH   -> MaterialTheme.colorScheme.error
-        Severity.MEDIUM -> MaterialTheme.colorScheme.tertiary
-        Severity.LOW    -> MaterialTheme.colorScheme.primary
+        Severity.HIGH    -> hardDetectionColor(isDark)
+        Severity.WARNING -> warningColor(isDark)
     }
-    val passColor = Color(0xFF2E7D32)
-    val accentColor = if (item.detected) severityColor else passColor
+    val accentColor = if (item.detected) severityColor else passColor(isDark)
     val accentContent = if (isDark) accentColor.copy(alpha = 0.88f) else accentColor
     val accentContainer = accentColor.copy(alpha = if (isDark) 0.14f else 0.12f)
     val accentSurface = accentColor.copy(alpha = if (isDark) 0.22f else 0.18f)

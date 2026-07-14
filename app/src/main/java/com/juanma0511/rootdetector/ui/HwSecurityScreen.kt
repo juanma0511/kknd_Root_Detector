@@ -37,7 +37,7 @@ fun HwSecurityScreen(viewModel: MainViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 104.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         
@@ -104,13 +104,13 @@ fun HwHeroCard(
         label = "hw_progress"
     )
 
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val statusColor = when {
         scanResult == null -> MaterialTheme.colorScheme.secondary
-        scanResult.failCount > 0 -> MaterialTheme.colorScheme.error
-        scanResult.warnCount > 0 -> MaterialTheme.colorScheme.tertiary
-        else -> Color(0xFF2E7D32)
+        scanResult.failCount > 0 -> hardDetectionColor(isDark)
+        scanResult.warnCount > 0 -> warningColor(isDark)
+        else -> passColor(isDark)
     }
-    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val containerColor = when {
         scanResult == null      -> if (isDark) Color(0xFF0D1B2E) else Color(0xFFDCE8FF)
         scanResult.failCount > 0 -> if (isDark) Color(0xFF2E0A0A) else Color(0xFFFFDAD6)
@@ -237,10 +237,11 @@ fun HwHeroCard(
 
 @Composable
 fun HwSummaryRow(result: HwScanResult) {
+    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SummaryChip("${result.failCount} Failed", MaterialTheme.colorScheme.error, selected = false, modifier = Modifier.weight(1f), onClick = {})
-        SummaryChip("${result.warnCount} Warn", MaterialTheme.colorScheme.tertiary, selected = false, modifier = Modifier.weight(1f), onClick = {})
-        SummaryChip("${result.passCount} Pass", Color(0xFF2E7D32), selected = false, modifier = Modifier.weight(1f), onClick = {})
+        SummaryChip("${result.failCount} Failed", hardDetectionColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
+        SummaryChip("${result.warnCount} Warn", warningColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
+        SummaryChip("${result.passCount} Pass", passColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
     }
 }
 
@@ -250,9 +251,9 @@ fun HwCheckCard(item: HwCheckItem) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     
     val statusColor = when (item.status) {
-        CheckStatus.PASS    -> Color(0xFF2E7D32)
-        CheckStatus.WARN    -> MaterialTheme.colorScheme.tertiary
-        CheckStatus.FAIL    -> MaterialTheme.colorScheme.error
+        CheckStatus.PASS    -> passColor(isDark)
+        CheckStatus.WARN    -> warningColor(isDark)
+        CheckStatus.FAIL    -> hardDetectionColor(isDark)
         CheckStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
     }
 
@@ -331,7 +332,7 @@ fun HwCheckCard(item: HwCheckItem) {
                             Text("Expected: ", style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(it, style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF2E7D32), fontFamily = FontFamily.Monospace)
+                                color = passColor(isDark), fontFamily = FontFamily.Monospace)
                         }
                     }
                     item.detail?.let {

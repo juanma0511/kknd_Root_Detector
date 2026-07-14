@@ -25,7 +25,8 @@ private val LightColors = lightColorScheme(
     tertiaryContainer  = Color(0xFFFFDBC8),
     error              = Color(0xFFB71C1C),
     errorContainer     = Color(0xFFFFDAD6),
-    surface            = Color(0xFFFAFAFF),
+    background         = Color(0xFFFFFAFA),
+    surface            = Color(0xFFFFFAFA),
     surfaceVariant     = Color(0xFFE1E2EC),
 )
 
@@ -40,7 +41,8 @@ private val DarkColors = darkColorScheme(
     tertiaryContainer  = Color(0xFFB23C00),
     error              = Color(0xFFFF6B6B),
     errorContainer     = Color(0xFF930006),
-    surface            = Color(0xFF111318),
+    background         = Color(0xFF272727),
+    surface            = Color(0xFF272727),
     surfaceVariant     = Color(0xFF43474E),
 )
 
@@ -57,7 +59,7 @@ fun RootDetectorTheme(
         ThemeMode.SYSTEM -> systemDark
     }
 
-    val colorScheme = when {
+    val baseScheme = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val ctx = LocalContext.current
             if (isDark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
@@ -65,6 +67,9 @@ fun RootDetectorTheme(
         isDark -> DarkColors
         else   -> LightColors
     }
+    // Pin the app background to the spec regardless of dynamic color.
+    val appBackground = if (isDark) Color(0xFF272727) else Color(0xFFFFFAFA)
+    val colorScheme = baseScheme.copy(background = appBackground, surface = appBackground)
 
     val view = LocalView.current
     if (!view.isInEditMode) {

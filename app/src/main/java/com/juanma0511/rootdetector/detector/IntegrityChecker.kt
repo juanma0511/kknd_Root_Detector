@@ -55,7 +55,7 @@ class IntegrityChecker(private val context: Context) {
                 prefs.edit().putString("apk_sig_sha256", sha256).apply()
                 det("apk_sig", "APK Signature",
                     "Signature recorded as baseline on first run",
-                    Severity.LOW, false, "SHA-256: ${sha256.take(16)}…")
+                    Severity.WARNING, false, "SHA-256: ${sha256.take(16)}…")
             } else if (baseline != sha256) {
                 det("apk_sig_mismatch", "APK Signature Changed",
                     "Signature differs from baseline — APK was patched or re-signed",
@@ -64,12 +64,12 @@ class IntegrityChecker(private val context: Context) {
             } else {
                 det("apk_sig", "APK Signature Valid",
                     "Signature matches baseline",
-                    Severity.LOW, false, "SHA-256: ${sha256.take(16)}…")
+                    Severity.WARNING, false, "SHA-256: ${sha256.take(16)}…")
             }
         } catch (e: Exception) {
             det("apk_sig_error", "APK Signature Check Failed",
                 "Could not verify APK signature: ${e.message}",
-                Severity.MEDIUM, false, e.message)
+                Severity.WARNING, false, e.message)
         }
     }
 
@@ -96,13 +96,13 @@ class IntegrityChecker(private val context: Context) {
         if (!clStr.contains(apkPath) && !clStr.contains(context.packageName)) {
             return det("classloader_path", "ClassLoader Path Anomaly",
                 "ClassLoader doesn't reference our APK path",
-                Severity.MEDIUM, true,
+                Severity.WARNING, true,
                 "Expected path: $apkPath\nClassLoader: $clStr")
         }
 
         return det("classloader_ok", "ClassLoader Integrity",
             "ClassLoader is standard PathClassLoader pointing to correct APK",
-            Severity.LOW, false, clName)
+            Severity.WARNING, false, clName)
     }
 
     private fun checkDexIntegrity(): DetectionItem {
@@ -139,7 +139,7 @@ class IntegrityChecker(private val context: Context) {
                     .apply()
                 return det("apk_size", "APK Baseline Updated",
                     "New install or update detected — baseline reset",
-                    Severity.LOW, false, "v$currentVersion · $apkSize bytes")
+                    Severity.WARNING, false, "v$currentVersion · $apkSize bytes")
             }
 
             val baselineSize = prefs.getLong("apk_size", -1L)
@@ -148,7 +148,7 @@ class IntegrityChecker(private val context: Context) {
                 prefs.edit().putLong("apk_size", apkSize).apply()
                 det("apk_size", "APK Size Recorded",
                     "APK size recorded as baseline",
-                    Severity.LOW, false, "Size: $apkSize bytes")
+                    Severity.WARNING, false, "Size: $apkSize bytes")
             } else if (apkSize != baselineSize) {
                 det("apk_size_changed", "APK Size Changed",
                     "APK size differs from baseline — LSPatch or module injection detected",
@@ -157,12 +157,12 @@ class IntegrityChecker(private val context: Context) {
             } else {
                 det("apk_size_ok", "APK File Integrity",
                     "APK size matches baseline",
-                    Severity.LOW, false, "Size: $apkSize bytes")
+                    Severity.WARNING, false, "Size: $apkSize bytes")
             }
         } catch (e: Exception) {
             det("apk_size_error", "APK Integrity Check Failed",
                 "Error checking APK file: ${e.message}",
-                Severity.LOW, false, e.message)
+                Severity.WARNING, false, e.message)
         }
     }
 
@@ -181,12 +181,12 @@ class IntegrityChecker(private val context: Context) {
             } else {
                 det("user_ca_ok", "Trust Store Clean",
                     "No user-installed CA certificates found",
-                    Severity.LOW, false, null)
+                    Severity.WARNING, false, null)
             }
         } catch (e: Exception) {
             det("user_ca_error", "Trust Store Check Failed",
                 "Could not check user CA directory",
-                Severity.LOW, false, e.message)
+                Severity.WARNING, false, e.message)
         }
     }
 

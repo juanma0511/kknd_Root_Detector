@@ -40,7 +40,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.RootDetector"
         android:usesCleartextTraffic="false"
-        android:zygotePreloadName=".zygote.AppZygote">
+        android:zygotePreloadName="com.juanma0511.rootdetector.zygote.AppZygote">
         <activity
             android:name=".MainActivity"
             android:exported="true"

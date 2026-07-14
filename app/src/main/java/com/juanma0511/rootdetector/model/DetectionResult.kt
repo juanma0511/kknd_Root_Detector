@@ -14,7 +14,7 @@ enum class DetectionCategory {
     CUSTOM_ROM
 }
 
-enum class Severity { HIGH, MEDIUM, LOW }
+enum class Severity { HIGH, WARNING }
 
 data class DetectionItem(
     val id: String,
@@ -35,8 +35,7 @@ data class ScanResult(
     val isSuspicious: Boolean get() = items.any { it.detected }
     val detectedCount: Int get() = items.count { it.detected }
     val highRiskCount: Int get() = items.count { it.detected && it.severity == Severity.HIGH }
-    val mediumRiskCount: Int get() = items.count { it.detected && it.severity == Severity.MEDIUM }
-    val lowRiskCount: Int get() = items.count { it.detected && it.severity == Severity.LOW }
+    val warningCount: Int get() = items.count { it.detected && it.severity == Severity.WARNING }
 }
 
 enum class ScanState { IDLE, SCANNING, DONE }
