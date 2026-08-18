@@ -975,7 +975,11 @@ class RootDetector(private val context: Context) {
             return "ro.build and ro.system fingerprints disagree on core build fields"
         }
 
-        if (!compatibleIncremental(build.incremental, system.incremental)) {
+        // Skip incremental mismatch when one side is a generic/shared system
+        // image. The generic build and device build come from different
+        // pipelines and naturally have different incrementals.
+        if (!isGenericSystemImage(build) && !isGenericSystemImage(system) &&
+            !compatibleIncremental(build.incremental, system.incremental)) {
             return "ro.build and ro.system fingerprints disagree on build incremental"
         }
 
