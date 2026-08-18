@@ -1327,31 +1327,6 @@ class RootDetector(private val context: Context) {
             newerEvidence.joinToString("\n").ifEmpty { null }
         )
 
-        // Use a flat 90-day threshold regardless of boot state (easily spoofed).
-        val thresholdDays = 90L
-        val closest = patchDates.minByOrNull { diffDays(kernelDate, it.value) }
-        val newest = patchDates.maxByOrNull { it.value.time }
-        val staleness = linkedSetOf<String>()
-        if (closest != null && newest != null) {
-            val closestDiff = diffDays(kernelDate, closest.value)
-            val newestDiff = diffDays(kernelDate, newest.value)
-            if (closestDiff > thresholdDays && newestDiff > thresholdDays && !kernelDate.after(newest.value)) {
-                staleness += "kernel_build=${formatDate(kernelDate)}"
-                staleness += "closest_patch=${closest.key}:${formatDate(closest.value)} (${closestDiff}d apart)"
-                staleness += "newest_patch=${newest.key}:${formatDate(newest.value)} (${newestDiff}d apart)"
-                staleness += "threshold=${thresholdDays}d"
-            }
-        }
-        results += det(
-            "kernel_patch_window",
-            "Kernel / Patch Window Mismatch",
-            DetectionCategory.SYSTEM_PROPS,
-            Severity.WARNING,
-            "Kernel build date is unusually far from all security patch dates — indicates a mismatched kernel from a different build cycle",
-            staleness.isNotEmpty(),
-            staleness.joinToString("\n").ifEmpty { null }
-        )
-
         return results
     }
 
