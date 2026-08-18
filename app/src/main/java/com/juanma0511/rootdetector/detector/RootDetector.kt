@@ -920,15 +920,18 @@ class RootDetector(private val context: Context) {
         )
     }
 
-    // On Android 17+ Pixel builds the system partition is a shared/generic
-    // image, so ro.system.build.fingerprint legitimately reads as e.g.
-    // google/generic_system_google/generic:... while ro.build.fingerprint
-    // keeps the real device codename (blazer, tokay, ...). Not a spoof.
+    // Some OEMs use a shared system partition image across device models,
+    // making ro.system.build.fingerprint differ legitimately from the
+    // device-specific ro.build.fingerprint. Known patterns:
+    //   - Pixel:   google/generic_system_google/generic (A17+)
+    //   - Xiaomi:  Xiaomi/missi/missi (shared platform image)
+    //   - Others:  product/device matching "generic" or "missi"
     private fun isGenericSystemImage(parts: FingerprintParts): Boolean {
         val product = parts.product.lowercase()
         val device = parts.device.lowercase()
         return product == "generic" || product.startsWith("generic_") ||
-            device == "generic" || device.startsWith("generic_")
+            device == "generic" || device.startsWith("generic_") ||
+            product == "missi" || device == "missi"
     }
 
     private fun compatibleIncremental(left: String, right: String): Boolean {
