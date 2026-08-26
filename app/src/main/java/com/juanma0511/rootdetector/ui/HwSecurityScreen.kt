@@ -26,6 +26,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.juanma0511.rootdetector.R
 import com.juanma0511.rootdetector.MainViewModel
 import com.juanma0511.rootdetector.model.*
 
@@ -161,12 +163,12 @@ fun HwHeroCard(
 
             Text(
                 text = when {
-                    scanState == HwScanState.IDLE -> "Hardware Security"
-                    scanState == HwScanState.SCANNING -> "Analyzing..."
-                    (scanResult?.failCount ?: 0) > 0 -> "${scanResult!!.failCount} Critical Findings"
-                    (scanResult?.warnCount ?: 0) > 0 -> "${scanResult!!.warnCount} Warnings"
-                    scanResult != null -> "All Checks Passed"
-                    else -> "Hardware Security"
+                    scanState == HwScanState.IDLE -> stringResource(R.string.hardware_security)
+                    scanState == HwScanState.SCANNING -> stringResource(R.string.analyzing)
+                    (scanResult?.failCount ?: 0) > 0 -> stringResource(R.string.critical_findings, scanResult!!.failCount)
+                    (scanResult?.warnCount ?: 0) > 0 -> stringResource(R.string.warnings_count, scanResult!!.warnCount)
+                    scanResult != null -> stringResource(R.string.all_checks_passed_title)
+                    else -> stringResource(R.string.hardware_security)
                 },
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
@@ -174,8 +176,8 @@ fun HwHeroCard(
             )
             Text(
                 text = when {
-                    scanState == HwScanState.IDLE -> "TEE · StrongBox · VBMeta · Verified Boot"
-                    scanState == HwScanState.SCANNING -> "$scanProgress% complete"
+                    scanState == HwScanState.IDLE -> stringResource(R.string.hardware_checks_overview)
+                    scanState == HwScanState.SCANNING -> stringResource(R.string.complete, scanProgress)
                     scanResult != null ->
                         "${scanResult.passCount} passed · ${scanResult.warnCount} warn · ${scanResult.failCount} failed"
                     else -> ""
@@ -202,7 +204,7 @@ fun HwHeroCard(
                         ) {
                             Icon(Icons.Outlined.PlayArrow, null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Analyze Hardware Security", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                            Text(stringResource(R.string.analyze_hardware_security), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                         }
                     }
                     HwScanState.DONE -> {
@@ -214,7 +216,7 @@ fun HwHeroCard(
                         ) {
                             Icon(Icons.Filled.Refresh, null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Scan Again", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                            Text(stringResource(R.string.scan_again), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                         }
                     }
                     HwScanState.SCANNING -> {
@@ -239,9 +241,9 @@ fun HwHeroCard(
 fun HwSummaryRow(result: HwScanResult) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SummaryChip("${result.failCount} Failed", hardDetectionColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
-        SummaryChip("${result.warnCount} Warn", warningColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
-        SummaryChip("${result.passCount} Pass", passColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
+        SummaryChip(stringResource(R.string.failed_summary, result.failCount), hardDetectionColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
+        SummaryChip(stringResource(R.string.warn_summary, result.warnCount), warningColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
+        SummaryChip(stringResource(R.string.pass_summary, result.passCount), passColor(isDark), selected = false, modifier = Modifier.weight(1f), onClick = {})
     }
 }
 
@@ -283,7 +285,7 @@ fun HwCheckCard(item: HwCheckItem) {
                         .background(statusColor.copy(alpha = if (isDark) 0.85f else 0.65f))
                 )
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(item.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(localizedHardwareTitle(item), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                     Text(
                         item.value,
                         style = MaterialTheme.typography.bodySmall,
@@ -296,10 +298,10 @@ fun HwCheckCard(item: HwCheckItem) {
                 Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = if (isDark) 0.24f else 0.15f)) {
                     Text(
                         when (item.status) {
-                            CheckStatus.PASS    -> "PASS"
-                            CheckStatus.WARN    -> "WARN"
-                            CheckStatus.FAIL    -> "FAIL"
-                            CheckStatus.UNKNOWN -> "INFO"
+                            CheckStatus.PASS    -> stringResource(R.string.pass)
+                            CheckStatus.WARN    -> stringResource(R.string.status_warn)
+                            CheckStatus.FAIL    -> stringResource(R.string.status_fail)
+                            CheckStatus.UNKNOWN -> stringResource(R.string.status_info)
                         },
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
@@ -322,14 +324,14 @@ fun HwCheckCard(item: HwCheckItem) {
                     HorizontalDivider(color = statusColor.copy(alpha = 0.2f))
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        item.description,
+                        localizedHardwareDescription(item),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     item.expected?.let {
                         Spacer(Modifier.height(4.dp))
                         Row {
-                            Text("Expected: ", style = MaterialTheme.typography.labelSmall,
+                            Text(stringResource(R.string.expected_label), style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(it, style = MaterialTheme.typography.labelSmall,
                                 color = passColor(isDark), fontFamily = FontFamily.Monospace)
@@ -353,11 +355,13 @@ fun HwCheckCard(item: HwCheckItem) {
     }
 }
 
-private fun groupLabel(group: HwGroup) = when (group) {
-    HwGroup.KEYSTORE     -> "Keystore / TEE / StrongBox"
-    HwGroup.BOOT         -> "Verified Boot"
-    HwGroup.VBMETA       -> "VBMeta / AVB"
-    HwGroup.SYSTEM_PROPS -> "System Properties"
+@Composable
+private fun groupLabel(group: HwGroup) = stringResource(when (group) {
+    HwGroup.KEYSTORE     -> R.string.group_keystore
+    HwGroup.BOOT         -> R.string.group_verified_boot
+    HwGroup.VBMETA       -> R.string.group_vbmeta
+    HwGroup.SYSTEM_PROPS -> R.string.group_system_properties
+})
 }
 
 private fun groupIcon(group: HwGroup): androidx.compose.ui.graphics.vector.ImageVector = when (group) {

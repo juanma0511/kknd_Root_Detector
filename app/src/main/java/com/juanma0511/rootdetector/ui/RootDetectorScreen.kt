@@ -31,6 +31,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import com.juanma0511.rootdetector.R
 import com.juanma0511.rootdetector.MainViewModel
 import com.juanma0511.rootdetector.model.*
 
@@ -160,12 +162,12 @@ fun StatusHeroCard(
 
             Text(
                 text = when {
-                    scanState == ScanState.IDLE -> "Ready to Scan"
-                    scanState == ScanState.SCANNING -> "Scanning..."
-                    scanResult?.isRooted == true -> "Root Detected"
-                    scanResult?.isSuspicious == true -> "Suspicious"
-                    scanResult != null -> "Device Clean"
-                    else -> "Ready to Scan"
+                    scanState == ScanState.IDLE -> stringResource(R.string.ready_to_scan)
+                    scanState == ScanState.SCANNING -> stringResource(R.string.scanning)
+                    scanResult?.isRooted == true -> stringResource(R.string.root_detected)
+                    scanResult?.isSuspicious == true -> stringResource(R.string.suspicious)
+                    scanResult != null -> stringResource(R.string.device_clean)
+                    else -> stringResource(R.string.ready_to_scan)
                 },
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
@@ -174,13 +176,13 @@ fun StatusHeroCard(
 
             Text(
                 text = when {
-                    scanState == ScanState.IDLE -> "Tap below to run a full security analysis"
-                    scanState == ScanState.SCANNING -> "Running $scanProgress% of checks..."
+                    scanState == ScanState.IDLE -> stringResource(R.string.tap_to_run_analysis)
+                    scanState == ScanState.SCANNING -> stringResource(R.string.running_checks, scanProgress)
                     scanResult?.isRooted == true ->
-                        "${scanResult.detectedCount} indicators found · ${scanResult.highRiskCount} high risk"
+                        stringResource(R.string.indicators_found, scanResult.detectedCount, scanResult.highRiskCount)
                     scanResult?.isSuspicious == true ->
-                        "${scanResult.detectedCount} low-risk indicators found"
-                    scanResult != null -> "All ${scanResult.items.size} checks passed"
+                        stringResource(R.string.low_risk_indicators_found, scanResult.detectedCount)
+                    scanResult != null -> stringResource(R.string.all_checks_passed, scanResult.items.size)
                     else -> ""
                 },
                 style = MaterialTheme.typography.bodyMedium,
@@ -210,7 +212,7 @@ fun StatusHeroCard(
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "Start Scan",
+                                stringResource(R.string.start_scan),
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 16.sp
                             )
@@ -230,7 +232,7 @@ fun StatusHeroCard(
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "Scan Again",
+                                stringResource(R.string.scan_again),
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 16.sp
                             )
@@ -270,14 +272,14 @@ fun SummaryRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         SummaryChip(
-            label = "${result.highRiskCount} High",
+            label = "${result.highRiskCount} ${stringResource(R.string.high)}",
             color = hardDetectionColor(isDark),
             selected = selectedSeverity == Severity.HIGH,
             modifier = Modifier.weight(1f),
             onClick = { onSeverityClick(Severity.HIGH) }
         )
         SummaryChip(
-            label = "${result.warningCount} Warning",
+            label = "${result.warningCount} ${stringResource(R.string.warning)}",
             color = warningColor(isDark),
             selected = selectedSeverity == Severity.WARNING,
             modifier = Modifier.weight(1f),
@@ -330,6 +332,10 @@ fun DetectionItemCard(item: DetectionItem) {
     var expanded by remember { mutableStateOf(false) }
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val clipboardManager = LocalClipboardManager.current
+    val foundLabel = stringResource(R.string.found)
+    val passLabel = stringResource(R.string.pass)
+    val title = localizedDetectorTitle(item)
+    val description = localizedDetectorDescription(item)
 
     val severityColor = when (item.severity) {
         Severity.HIGH    -> hardDetectionColor(isDark)
@@ -348,7 +354,13 @@ fun DetectionItemCard(item: DetectionItem) {
                     if (item.detected) expanded = !expanded
                 },
                 onLongClick = {
-                    clipboardManager.setText(AnnotatedString(buildDetectionCopyText(item)))
+                    clipboardManager.setText(AnnotatedString(buildDetectionCopyText(
+                        item,
+                        title = title,
+                        description = description,
+                        foundLabel = foundLabel,
+                        passLabel = passLabel
+                    )))
                 }
             ),
         shape = RoundedCornerShape(16.dp),
@@ -377,13 +389,13 @@ fun DetectionItemCard(item: DetectionItem) {
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        item.name,
+                        localizedDetectorTitle(item),
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = accentContent
                     )
                     Text(
-                        item.description,
+                        localizedDetectorDescription(item),
                         style = MaterialTheme.typography.bodySmall,
                         color = accentContent.copy(alpha = if (isDark) 0.72f else 0.82f),
                         maxLines = 2,
@@ -408,7 +420,7 @@ fun DetectionItemCard(item: DetectionItem) {
                         }
                         if (item.detected) {
                             Text(
-                                "Hold to copy",
+                                stringResource(R.string.hold_to_copy),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = accentContent.copy(alpha = if (isDark) 0.62f else 0.72f)
                             )
@@ -421,7 +433,7 @@ fun DetectionItemCard(item: DetectionItem) {
                     color = accentSurface
                 ) {
                     Text(
-                        if (item.detected) "FOUND" else "PASS",
+                        if (item.detected) stringResource(R.string.found) else stringResource(R.string.pass),
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
@@ -438,7 +450,7 @@ fun DetectionItemCard(item: DetectionItem) {
 
                     if (item.detail != null) {
                         Text(
-                            "Detail",
+                            stringResource(R.string.detail),
                             style = MaterialTheme.typography.labelMedium,
                             color = accentContent.copy(alpha = if (isDark) 0.78f else 0.9f),
                             fontWeight = FontWeight.SemiBold
@@ -473,26 +485,33 @@ private fun categoryIcon(category: DetectionCategory): ImageVector = when (categ
     DetectionCategory.CUSTOM_ROM    -> Icons.Outlined.Smartphone
 }
 
-private fun categoryLabel(category: DetectionCategory): String = when (category) {
-    DetectionCategory.SU_BINARIES -> "SU"
-    DetectionCategory.ROOT_APPS -> "Apps"
-    DetectionCategory.SYSTEM_PROPS -> "Props"
-    DetectionCategory.MOUNT_POINTS -> "Mounts"
-    DetectionCategory.BUILD_TAGS -> "Build"
-    DetectionCategory.BUSYBOX -> "Binaries"
-    DetectionCategory.WRITABLE_PATHS -> "Paths"
-    DetectionCategory.MAGISK -> "Runtime"
-    DetectionCategory.FRIDA -> "Frida"
-    DetectionCategory.EMULATOR -> "Emulator"
-    DetectionCategory.CUSTOM_ROM -> "ROM"
-}
+@Composable
+private fun categoryLabel(category: DetectionCategory): String = stringResource(when (category) {
+    DetectionCategory.SU_BINARIES -> R.string.category_su
+    DetectionCategory.ROOT_APPS -> R.string.category_apps
+    DetectionCategory.SYSTEM_PROPS -> R.string.category_props
+    DetectionCategory.MOUNT_POINTS -> R.string.category_mounts
+    DetectionCategory.BUILD_TAGS -> R.string.category_build
+    DetectionCategory.BUSYBOX -> R.string.category_binaries
+    DetectionCategory.WRITABLE_PATHS -> R.string.category_paths
+    DetectionCategory.MAGISK -> R.string.category_runtime
+    DetectionCategory.FRIDA -> R.string.category_frida
+    DetectionCategory.EMULATOR -> R.string.category_emulator
+    DetectionCategory.CUSTOM_ROM -> R.string.category_rom
+})
 
-private fun buildDetectionCopyText(item: DetectionItem): String {
-    val state = if (item.detected) "FOUND" else "PASS"
+private fun buildDetectionCopyText(
+    item: DetectionItem,
+    title: String,
+    description: String,
+    foundLabel: String,
+    passLabel: String
+): String {
+    val state = if (item.detected) foundLabel else passLabel
     return buildString {
-        append("[${item.severity}] ${item.name}: $state")
+        append("[${item.severity}] $title: $state")
         append('\n')
-        append(item.description)
+        append(description)
         if (!item.detail.isNullOrBlank()) {
             append('\n')
             append('\n')
