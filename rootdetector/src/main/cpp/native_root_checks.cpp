@@ -28,6 +28,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #ifndef __NR_statx
 #define __NR_statx 291
 #endif
@@ -39,7 +40,16 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
 struct Detection { std::string id, name, desc; };
+struct NativeTaskResult {
+    std::string id;
+    std::string name;
+    std::string status;
+    std::string detail;
+    std::vector<Detection> signals;
+};
+
 static std::vector<Detection> g_results;
+static std::vector<NativeTaskResult> g_task_results;
 static std::set<std::string> g_seen;
 
 static void add(const char* id, const char* name, const std::string& desc) {
@@ -47,6 +57,47 @@ static void add(const char* id, const char* name, const std::string& desc) {
     g_seen.insert(id);
     g_results.push_back({id, name, desc});
     LOGI("[%s] %s", id, desc.c_str());
+}
+
+// Task-level reporting intentionally wraps the existing detector functions without
+// changing their detection logic. Internal probe I/O failures that a detector already
+// swallows are still reported as NOT_DETECTED; only propagated C++ exceptions become ERROR.
+template <typename F>
+static void runNativeTask(const char* id, const char* name, F&& fn) {
+    const size_t before = g_results.size();
+    NativeTaskResult task;
+    task.id = id;
+    task.name = name;
+
+    try {
+        fn();
+        if (g_results.size() > before) {
+            task.status = "DETECTED";
+            task.detail = std::to_string(g_results.size() - before) + " native signal(s) detected";
+            task.signals.assign(
+                g_results.begin() + static_cast<std::vector<Detection>::difference_type>(before),
+                g_results.end()
+            );
+        } else {
+            task.status = "NOT_DETECTED";
+            task.detail = "Native check completed without detections";
+        }
+    } catch (const std::exception& e) {
+        task.status = "ERROR";
+        task.detail = e.what() ? e.what() : "Native check threw std::exception";
+    } catch (...) {
+        task.status = "ERROR";
+        task.detail = "Native check threw an unknown exception";
+    }
+
+    g_task_results.push_back(task);
+}
+
+static std::string sanitizeNativeField(std::string value) {
+    for (auto& c : value) {
+        if (c == '\x1f' || c == '\x1e') c = ' ';
+    }
+    return value;
 }
 
 static bool fexists(const char* p) {
@@ -2540,86 +2591,116 @@ static void detectSelinuxDirtyPolicy() {
         add("selinux_dirty_policy", "DirtySepolicy Rule Detected", d);
     }
 }
-
+// TODO(CRITICAL - RESULT ACCURACY):
+// Native probe failures are not yet fully distinguishable from clean results.
+// Several legacy detector functions swallow internal I/O/procfs/sysfs errors
+// and simply return without reporting failure.
+//
+// Because this layer mainly observes whether findings were added, a probe that
+// failed internally may currently be reported as NOT_DETECTED.
+//
+// Native probes should eventually return an explicit result state:
+// DETECTED / NOT_DETECTED / ERROR / UNSUPPORTED.
+//
+// Until then, NOT_DETECTED does not always guarantee that the native probe
+// completed successfully.
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_com_juanma0511_rootdetector_detector_NativeChecks_runNativeChecks(JNIEnv* env, jobject) {
     g_results.clear();
+    g_task_results.clear();
     g_seen.clear();
 
-    detectKernelsu();
-    detectKernelsuKill();
-    detectKernelsuJbd2();
-    detectKernelsuNextVariants();
-    detectKernelsuNextMaps();
-    detectKernelsuKallsyms();
-    
-    detectKernelsuUidAnomaly();
-    detectKernelsuStatusFields();
-    detectKernelsuNetUnix();
-    detectMagiskSocket();
-    detectZygisk();
-    detectPtrace();
-    detectSuBinary();
-    detectSuDirectory();
-    detectDataLocalArtifacts();
-    detectSetuidBits();
-    detectSulist();
-    detectRootDaemonCmdline();
-    detectRootUnixSockets();
-    detectSuspiciousFiles();
-    detectSuspiciousPersistProps();
-    detectThirdPartyRom();
-    detectKernelBuild();
-    detectKernelBlacklist();
-    detectApatch();
-    detectCgroupSupport();
-    detectMountAnomalies();
-    detectResetprop();
-    detectLspHook();
-    detectFrida();
-    detectNativeBridge();
-    detectAvbVersion();
-    detectEnvAnomalies();
-    detectJniTableSource(env);
-    detectBuildPropsNative();
-    detectMountLoophole();
-    detectHiddenProcessGroups();
-    detectHwBreakpoints();
-    detectAnonExec();
-    detectEvilServices();
-    detectPty();
-    detectLibraryOrder();
-    detectSoTampering();
-    detectVirtualArch();
-    detectFakeEnvironment();
-    detectMagicMount();
-    detectProc1MountDiff();
-    detectMountConsistency();
-    detectZygoteEnvironment();
-    detectMaliciousHook();
-    detectInotify();
-    detectSyscallTiming();
-    detectKallsymsDeep();
-    detectUserCACerts();
-    detectProxyPorts();
-    detectSystemProxy();
-    detectSUSFS();
-    detectLSPatch();
-    detectSeccompDisabled();
-    detectShamiko();
-    detectZygiskNext();
-    detectKernelPatchModule();
-    detectFridaFds();
-    detectApatchExtra();
-    detectSOTERBypass();
-    detectXposedNative();
-    detectMapsFiltering();
-    detectRiruNative();
+    runNativeTask("kernelsu_prctl", "KernelSU prctl hooks", [] { detectKernelsu(); });
+    runNativeTask("kernelsu_kill", "KernelSU kill hook", [] { detectKernelsuKill(); });
+    runNativeTask("kernelsu_nodes", "KernelSU sysfs/proc nodes", [] { detectKernelsuJbd2(); });
+    runNativeTask("kernelsu_next_variants", "KernelSU Next variants", [] { detectKernelsuNextVariants(); });
+    runNativeTask("kernelsu_next_maps", "KernelSU Next memory maps", [] { detectKernelsuNextMaps(); });
+    runNativeTask("kernelsu_kallsyms", "KernelSU kallsyms", [] { detectKernelsuKallsyms(); });
+    runNativeTask("kernelsu_uid", "KernelSU UID anomaly", [] { detectKernelsuUidAnomaly(); });
+    runNativeTask("kernelsu_status", "KernelSU process status", [] { detectKernelsuStatusFields(); });
+    runNativeTask("kernelsu_unix", "KernelSU Unix sockets", [] { detectKernelsuNetUnix(); });
+    runNativeTask("magisk_socket", "Magisk daemon socket", [] { detectMagiskSocket(); });
+    runNativeTask("zygisk_runtime", "Zygisk/Riru runtime", [] { detectZygisk(); });
+    runNativeTask("ptrace", "Ptrace / tracer", [] { detectPtrace(); });
+    runNativeTask("su_binary", "SU and root binaries", [] { detectSuBinary(); });
+    runNativeTask("su_directory", "SU directories", [] { detectSuDirectory(); });
+    runNativeTask("data_local_artifacts", "Data/local root artifacts", [] { detectDataLocalArtifacts(); });
+    runNativeTask("setuid_bits", "Setuid binaries", [] { detectSetuidBits(); });
+    runNativeTask("sulist", "SU list artifacts", [] { detectSulist(); });
+    runNativeTask("root_daemon_cmdline", "Root daemon processes", [] { detectRootDaemonCmdline(); });
+    runNativeTask("root_unix_sockets", "Root Unix sockets", [] { detectRootUnixSockets(); });
+    runNativeTask("suspicious_files", "Suspicious root files", [] { detectSuspiciousFiles(); });
+    runNativeTask("persist_props", "Suspicious persistent properties", [] { detectSuspiciousPersistProps(); });
+    runNativeTask("third_party_rom", "Third-party ROM", [] { detectThirdPartyRom(); });
+    runNativeTask("kernel_build", "Kernel build", [] { detectKernelBuild(); });
+    runNativeTask("kernel_blacklist", "Kernel blacklist", [] { detectKernelBlacklist(); });
+    runNativeTask("apatch", "APatch", [] { detectApatch(); });
+    runNativeTask("cgroup", "Cgroup anomalies", [] { detectCgroupSupport(); });
+    runNativeTask("mount_anomalies", "Mount anomalies", [] { detectMountAnomalies(); });
+    runNativeTask("resetprop", "resetprop", [] { detectResetprop(); });
+    runNativeTask("lsposed_hooks", "LSPosed hooks", [] { detectLspHook(); });
+    runNativeTask("frida_runtime", "Frida runtime", [] { detectFrida(); });
+    runNativeTask("native_bridge", "Native bridge", [] { detectNativeBridge(); });
+    runNativeTask("avb_version", "AVB version", [] { detectAvbVersion(); });
+    runNativeTask("environment", "Environment anomalies", [] { detectEnvAnomalies(); });
+    runNativeTask("jni_table", "JNI table source", [&] { detectJniTableSource(env); });
+    runNativeTask("build_props", "Native build properties", [] { detectBuildPropsNative(); });
+    runNativeTask("mount_loophole", "Mount loopholes", [] { detectMountLoophole(); });
+    runNativeTask("hidden_process_groups", "Hidden process groups", [] { detectHiddenProcessGroups(); });
+    runNativeTask("hardware_breakpoints", "Hardware breakpoints", [] { detectHwBreakpoints(); });
+    runNativeTask("anon_exec", "Anonymous executable memory", [] { detectAnonExec(); });
+    runNativeTask("evil_services", "Suspicious services", [] { detectEvilServices(); });
+    runNativeTask("pty", "PTY anomalies", [] { detectPty(); });
+    runNativeTask("library_order", "Library load order", [] { detectLibraryOrder(); });
+    runNativeTask("so_tampering", "Shared object tampering", [] { detectSoTampering(); });
+    runNativeTask("virtual_arch", "Virtual architecture", [] { detectVirtualArch(); });
+    runNativeTask("fake_environment", "Fake environment", [] { detectFakeEnvironment(); });
+    runNativeTask("magic_mount", "Magic mount", [] { detectMagicMount(); });
+    runNativeTask("proc1_mount_diff", "PID 1 mount differences", [] { detectProc1MountDiff(); });
+    runNativeTask("mount_consistency", "Mount consistency", [] { detectMountConsistency(); });
+    runNativeTask("zygote_environment", "Zygote environment", [] { detectZygoteEnvironment(); });
+    runNativeTask("malicious_hook", "Malicious native hooks", [] { detectMaliciousHook(); });
+    runNativeTask("inotify", "Inotify anomalies", [] { detectInotify(); });
+    runNativeTask("syscall_timing", "Syscall timing", [] { detectSyscallTiming(); });
+    runNativeTask("kallsyms_deep", "Kallsyms deep scan", [] { detectKallsymsDeep(); });
+    runNativeTask("user_ca_certs", "User CA certificates", [] { detectUserCACerts(); });
+    runNativeTask("proxy_ports", "Proxy ports", [] { detectProxyPorts(); });
+    runNativeTask("system_proxy", "System proxy", [] { detectSystemProxy(); });
+    runNativeTask("susfs", "SUSFS", [] { detectSUSFS(); });
+    runNativeTask("lspatch", "LSPatch", [] { detectLSPatch(); });
+    runNativeTask("seccomp", "Seccomp", [] { detectSeccompDisabled(); });
+    runNativeTask("shamiko", "Shamiko", [] { detectShamiko(); });
+    runNativeTask("zygisk_next", "Zygisk Next", [] { detectZygiskNext(); });
+    runNativeTask("kernel_patch_module", "Kernel patch modules", [] { detectKernelPatchModule(); });
+    runNativeTask("frida_fds", "Frida file descriptors", [] { detectFridaFds(); });
+    runNativeTask("apatch_extra", "APatch extended checks", [] { detectApatchExtra(); });
+    runNativeTask("soter_bypass", "SOTER bypass", [] { detectSOTERBypass(); });
+    runNativeTask("xposed", "Xposed framework", [] { detectXposedNative(); });
+    runNativeTask("maps_filtering", "Memory maps filtering", [] { detectMapsFiltering(); });
+    runNativeTask("riru", "Riru framework", [] { detectRiruNative(); });
+
+    constexpr char sep = '\x1f';
     jclass sc = env->FindClass("java/lang/String");
-    jobjectArray r = env->NewObjectArray((jsize)g_results.size(), sc, nullptr);
-    for (size_t i = 0; i < g_results.size(); i++) {
-        std::string e = g_results[i].id + "|" + g_results[i].name + "|" + g_results[i].desc;
-        env->SetObjectArrayElement(r, (jsize)i, env->NewStringUTF(e.c_str()));
+    jobjectArray out = env->NewObjectArray((jsize)g_task_results.size(), sc, nullptr);
+
+    for (size_t i = 0; i < g_task_results.size(); i++) {
+        const auto& task = g_task_results[i];
+        std::ostringstream encoded;
+        encoded << sanitizeNativeField(task.id) << sep
+                << sanitizeNativeField(task.status) << sep
+                << sanitizeNativeField(task.name) << sep
+                << sanitizeNativeField(task.detail) << sep
+                << task.signals.size();
+
+        for (const auto& signal : task.signals) {
+            encoded << sep << sanitizeNativeField(signal.id)
+                    << sep << sanitizeNativeField(signal.name)
+                    << sep << sanitizeNativeField(signal.desc);
+        }
+
+        env->SetObjectArrayElement(out, (jsize)i, env->NewStringUTF(encoded.str().c_str()));
     }
-    return r;
+
+    return out;
 }
+

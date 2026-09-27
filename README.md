@@ -119,10 +119,10 @@ callbacks are SAM interfaces.
 - Native binaries currently target `arm64-v8a` and `armeabi-v7a`, matching the existing app's
   supported ABIs. On an unsupported ABI, the native layer reports an explicit error rather than
   silently treating the device as clean.
-- JVM/Android scan tasks always return a structured status. The native engine currently reports
-  individual positive native findings, plus a `native_engine` clean/error result for the engine
-  itself; exposing one row for every internal C++ sub-check can be added independently without
-  changing the public `ScanResult` contract.
+- JVM/Android and native scan tasks return structured statuses. Each executed native detector
+  contributes one `CheckResult` (`DETECTED`, `NOT_DETECTED`, or `ERROR`); when a native task
+  detects one or more lower-level signals, their stable IDs and descriptions are preserved in
+  that check's `evidence` map. A native library/JNI failure is reported as `native_engine=ERROR`.
 
 For a signed release build see the **Release workflow** section below.
 
