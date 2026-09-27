@@ -4,7 +4,6 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.juanma0511.rootdetector.detector.HwSecurityDetector
-import com.juanma0511.rootdetector.detector.RootDetector
 import com.juanma0511.rootdetector.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -16,7 +15,6 @@ import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val rootDetector = RootDetector(application)
     private val hwDetector = HwSecurityDetector(application)
 
     private val _scanState = MutableStateFlow(ScanState.IDLE)
@@ -38,20 +36,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val hwScanResult: StateFlow<HwScanResult?> = _hwScanResult.asStateFlow()
 
     fun startScan() {
-        viewModelScope.launch {
-            _scanState.value = ScanState.SCANNING
-            _scanProgress.value = 0
-            _scanResult.value = null
-            val result = withContext(Dispatchers.IO) {
-                val start = System.currentTimeMillis()
-                val items = rootDetector.runAllChecks { p -> _scanProgress.value = p }
-                ScanResult(items = items, scanDurationMs = System.currentTimeMillis() - start)
+        _scanState.value = ScanState.SCANNING
+        _scanProgress.value = 0
+        _scanResult.value = null
+
+        RootDetector.scan(
+            getApplication(),
+            ScanProgressListener { progress ->
+                _scanProgress.value = progress
+            },
+            ScanCallback { result ->
+                _scanProgress.value = 100
+                _scanResult.value = result
+                _scanState.value = ScanState.DONE
             }
-            _scanProgress.value = 100
-            delay(300)
-            _scanResult.value = result
-            _scanState.value = ScanState.DONE
-        }
+        )
     }
 
     fun resetRootScan() {

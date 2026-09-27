@@ -251,10 +251,10 @@ fun HwCheckCard(item: HwCheckItem) {
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     
     val statusColor = when (item.status) {
-        CheckStatus.PASS    -> passColor(isDark)
-        CheckStatus.WARN    -> warningColor(isDark)
-        CheckStatus.FAIL    -> hardDetectionColor(isDark)
-        CheckStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+        HwCheckStatus.PASS    -> passColor(isDark)
+        HwCheckStatus.WARN    -> warningColor(isDark)
+        HwCheckStatus.FAIL    -> hardDetectionColor(isDark)
+        HwCheckStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
     }
 
     Card(
@@ -262,10 +262,10 @@ fun HwCheckCard(item: HwCheckItem) {
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = when (item.status) {
-                CheckStatus.PASS    -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDark) 0.32f else 0.4f)
-                CheckStatus.WARN    -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = if (isDark) 0.22f else 0.35f)
-                CheckStatus.FAIL    -> MaterialTheme.colorScheme.errorContainer.copy(alpha = if (isDark) 0.22f else 0.35f)
-                CheckStatus.UNKNOWN -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDark) 0.24f else 0.3f)
+                HwCheckStatus.PASS    -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDark) 0.32f else 0.4f)
+                HwCheckStatus.WARN    -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = if (isDark) 0.22f else 0.35f)
+                HwCheckStatus.FAIL    -> MaterialTheme.colorScheme.errorContainer.copy(alpha = if (isDark) 0.22f else 0.35f)
+                HwCheckStatus.UNKNOWN -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDark) 0.24f else 0.3f)
             }
         ),
         elevation = CardDefaults.cardElevation(0.dp),
@@ -296,10 +296,10 @@ fun HwCheckCard(item: HwCheckItem) {
                 Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = if (isDark) 0.24f else 0.15f)) {
                     Text(
                         when (item.status) {
-                            CheckStatus.PASS    -> "PASS"
-                            CheckStatus.WARN    -> "WARN"
-                            CheckStatus.FAIL    -> "FAIL"
-                            CheckStatus.UNKNOWN -> "INFO"
+                            HwCheckStatus.PASS    -> "PASS"
+                            HwCheckStatus.WARN    -> "WARN"
+                            HwCheckStatus.FAIL    -> "FAIL"
+                            HwCheckStatus.UNKNOWN -> "INFO"
                         },
                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,

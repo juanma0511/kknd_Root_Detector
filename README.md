@@ -64,6 +64,66 @@ The debug APK will be at:
 
     app/build/outputs/apk/debug/*.apk
 
+### Build the reusable AAR
+
+The detection core is also available as the headless `:rootdetector` Android library module.
+It contains the Kotlin checks, native C++ checks, AIDL/app-zygote integration, and the
+consumer ProGuard rules required by the JNI entry points.
+
+```bash
+./gradlew :rootdetector:assembleRelease
+```
+
+The AAR will be generated at:
+
+    rootdetector/build/outputs/aar/rootdetector-release.aar
+
+### Library API
+
+The public entry point is `RootDetector.scan(...)`. No Activity, Fragment, Compose UI,
+initialization call, or retained last-result state is required. Scans execute off the main
+thread; progress and completion callbacks are delivered on the main thread.
+
+```kotlin
+RootDetector.scan(
+    context,
+    ScanProgressListener { progress ->
+        // Optional progress: 0..100
+    },
+    ScanCallback { result ->
+        if (result.isRooted) {
+            // High-risk root evidence was detected.
+        }
+
+        // Full structured result remains available when more detail is needed.
+        val status = result.status
+        val checks = result.checks
+        val summary = result.summary
+    }
+)
+```
+
+Each `CheckResult` exposes a stable `id`, category, severity, status, detail, and evidence.
+`CheckStatus` distinguishes `DETECTED`, `NOT_DETECTED`, `ERROR`, `SKIPPED`, and
+`UNSUPPORTED`, so a check that could not run is not silently treated as a clean result.
+The aggregate `ScanStatus` is one of `CLEAN`, `SUSPICIOUS`, `ROOTED`, or `INCOMPLETE`.
+
+The API is Kotlin-first but Java-friendly: `scan(...)` is exposed as a static method and the
+callbacks are SAM interfaces.
+
+#### Integration notes
+
+- The AAR merges its package-visibility queries, isolated App Zygote service, and
+  `zygotePreloadName` into the consuming application's manifest. An application that already
+  defines its own `zygotePreloadName` must resolve that manifest-level conflict explicitly.
+- Native binaries currently target `arm64-v8a` and `armeabi-v7a`, matching the existing app's
+  supported ABIs. On an unsupported ABI, the native layer reports an explicit error rather than
+  silently treating the device as clean.
+- JVM/Android scan tasks always return a structured status. The native engine currently reports
+  individual positive native findings, plus a `native_engine` clean/error result for the engine
+  itself; exposing one row for every internal C++ sub-check can be added independently without
+  changing the public `ScanResult` contract.
+
 For a signed release build see the **Release workflow** section below.
 
 ---

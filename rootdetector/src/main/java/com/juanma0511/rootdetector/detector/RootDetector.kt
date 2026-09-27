@@ -1,0 +1,2856 @@
+package com.juanma0511.rootdetector.detector
+
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import com.juanma0511.rootdetector.model.CheckCategory
+import com.juanma0511.rootdetector.model.CheckResult
+import com.juanma0511.rootdetector.model.CheckStatus
+import com.juanma0511.rootdetector.model.Severity
+import java.io.File
+import android.system.Os
+import android.system.OsConstants
+import com.juanma0511.rootdetector.zygote.DirtySepolicyClient
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
+internal class RootDetector(private val context: Context) {
+
+    private val suPaths = HardcodedSignals.suPaths
+
+    private val mediumToolPackages = linkedMapOf(
+        "com.dimonvideo.luckypatcher" to "Lucky Patcher",
+        "com.chelpus.lackypatch" to "Lucky Patcher",
+        "com.android.vending.billing.InAppBillingService.COIN" to "Lucky Patcher",
+        "com.android.vending.billing.InAppBillingService.LUCK" to "Lucky Patcher"
+    )
+    private val lsposedHighRiskApps = linkedMapOf(
+        "io.mesalabs.knoxpatch" to "KnoxPatch",
+        "com.omarea.vtools" to "Scene"
+    )
+    private val rootPackages = HardcodedSignals.rootPackages.filterNot {
+        it.contains("keyattestation", ignoreCase = true) || it in mediumToolPackages.keys
+    }
+    private val patchedApps = HardcodedSignals.patchedApps.filterNot {
+        it.contains("keyattestation", ignoreCase = true) || it in mediumToolPackages.keys
+    }
+    private val warningApps = LinkedHashMap(HardcodedSignals.warningApps)
+    private val magiskPaths = HardcodedSignals.magiskPaths
+    private val dangerousBinaries = HardcodedSignals.dangerousBinaries
+    private val binaryPaths = HardcodedSignals.binaryPaths
+    private val protectedSystemPaths = HardcodedSignals.protectedSystemPaths
+    private val fridaProcesses = HardcodedSignals.fridaProcesses
+    private val fridaPorts = HardcodedSignals.fridaPorts
+    private val emulatorProducts = HardcodedSignals.emuProducts.toSet()
+    private val kernelSuPackages = HardcodedSignals.kernelSuPackages
+    private val kernelSuPaths = HardcodedSignals.kernelSuPaths
+    private val moduleDirs = HardcodedSignals.moduleDirs
+    private val moduleScanFiles = HardcodedSignals.moduleScanFiles
+    private val managerActions = HardcodedSignals.managerActions
+    private val envKeys = HardcodedSignals.envKeys
+    private val devSocketKeywords = HardcodedSignals.devSocketKeywords
+    private val kernelCmdlineFlags = HardcodedSignals.kernelCmdlineFlags
+    private val hiddenModuleKeywords = HardcodedSignals.hiddenModuleKeywords
+    private val hideBypassKeywords = HardcodedSignals.hideBypassKeywords
+    private val customRomProps = HardcodedSignals.customRomProps
+    private val customRomKeywords = HardcodedSignals.customRomKeywords
+    private val customRomFiles = HardcodedSignals.customRomFiles
+    private val lineageServices = HardcodedSignals.lineageServices
+    private val lineagePermissions = HardcodedSignals.lineagePermissions
+    private val lineageInitFiles = HardcodedSignals.lineageInitFiles
+    private val lineageSepolicyFiles = HardcodedSignals.lineageSepolicyFiles
+    private val knownDangerousModules = HardcodedSignals.knownDangerousModules
+    private val frameworkSweepKeywords = HardcodedSignals.allFrameworkSweepKeywords
+
+    private data class ScanTask(
+        val id: String,
+        val run: () -> List<CheckResult>
+    )
+
+    fun runAllChecks(progressCallback: (Int) -> Unit = {}): List<CheckResult> {
+        val tasks: List<ScanTask> = listOf(
+            ScanTask("zygiskRuntime") { listOf(ZygiskDetector().detect()) },
+            ScanTask("overlayFsRuntime") { listOf(OverlayFsDetector().detect()) },
+            ScanTask("mountNamespace") { listOf(MountNamespaceDetector().detect()) },
+            ScanTask("checkSuBinaries", ::checkSuBinaries),
+            ScanTask("checkRootPackages", ::checkRootPackages),
+            ScanTask("checkLsposedCompanionApps", ::checkLsposedCompanionApps),
+            ScanTask("checkPatchedApps", ::checkPatchedApps),
+            ScanTask("checkMediumRiskTools", ::checkMediumRiskTools),
+            ScanTask("checkWarningApps", ::checkWarningApps),
+            ScanTask("checkBuildTags", ::checkBuildTags),
+            ScanTask("checkDangerousProps", ::checkDangerousProps),
+            ScanTask("checkRootBinaries", ::checkRootBinaries),
+            ScanTask("checkWritablePaths", ::checkWritablePaths),
+            ScanTask("checkMagiskFiles", ::checkMagiskFiles),
+            ScanTask("checkFrida", ::checkFrida),
+            ScanTask("checkEmulator", ::checkEmulator),
+            ScanTask("checkMountPoints", ::checkMountPoints),
+            ScanTask("checkTestKeys", ::checkTestKeys),
+            ScanTask("checkNativeLibMaps", ::checkNativeLibMaps),
+            ScanTask("checkMagiskTmpfs", ::checkMagiskTmpfs),
+            ScanTask("checkKernelSU", ::checkKernelSU),
+            ScanTask("checkZygiskModules", ::checkZygiskModules),
+            ScanTask("checkSuInPath", ::checkSuInPath),
+            ScanTask("checkSELinux", ::checkSELinux),
+            ScanTask("checkPackageManagerAnomalies", ::checkPackageManagerAnomalies),
+            ScanTask("checkLineageServices", ::checkLineageServices),
+            ScanTask("checkLineagePermissions", ::checkLineagePermissions),
+            ScanTask("checkLineageInitFiles", ::checkLineageInitFiles),
+            ScanTask("checkLineageSepolicy", ::checkLineageSepolicy),
+            ScanTask("checkCustomRom", ::checkCustomRom),
+            ScanTask("checkKernelCmdline", ::checkKernelCmdline),
+            ScanTask("checkEnvHooks", ::checkEnvHooks),
+            ScanTask("checkDevSockets", ::checkDevSockets),
+            ScanTask("checkZygoteInjection", ::checkZygoteInjection),
+            ScanTask("checkOverlayFS", ::checkOverlayFS),
+            ScanTask("checkZygoteFDLeak", ::checkZygoteFDLeak),
+            ScanTask("checkProcessCapabilities", ::checkProcessCapabilities),
+            ScanTask("checkKernelPatchWindow", ::checkKernelPatchWindow),
+            ScanTask("checkSpoofedProps", ::checkSpoofedProps),
+            ScanTask("checkSuspiciousMountSources", ::checkSuspiciousMountSources),
+            ScanTask("checkMountInfoConsistency", ::checkMountInfoConsistency),
+            ScanTask("checkBinderServices", ::checkBinderServices),
+            ScanTask("checkProcessEnvironment", ::checkProcessEnvironment),
+            ScanTask("checkInitRcRootTraces", ::checkInitRcRootTraces),
+            ScanTask("checkRootSepolicyTraces", ::checkRootSepolicyTraces),
+            ScanTask("checkMemfdArtifacts", ::checkMemfdArtifacts),
+            ScanTask("checkPropertyConsistency", ::checkPropertyConsistency),
+            ScanTask("checkBuildFieldCoherence", ::checkBuildFieldCoherence),
+            ScanTask("checkHideBypassModules", ::checkHideBypassModules),
+            ScanTask("checkHiddenMagiskModules", ::checkHiddenMagiskModules),
+            ScanTask("checkHardcodedFrameworkSweep", ::checkHardcodedFrameworkSweep),
+            ScanTask("checkTmpfsOnData", ::checkTmpfsOnData),
+            ScanTask("checkSuTimestamps", ::checkSuTimestamps),
+            ScanTask("checkLdPreload", ::checkLdPreload),
+            ScanTask("checkSeccompMode", ::checkSeccompMode),
+            ScanTask("checkTracerPid", ::checkTracerPid),
+            ScanTask("checkSUSFS", ::checkSUSFS),
+            ScanTask("checkSOTER", ::checkSOTER),
+            ScanTask("checkXposedFramework", ::checkXposedFramework),
+            ScanTask("checkADBNetwork", ::checkADBNetwork),
+            ScanTask("checkDeveloperOptions", ::checkDeveloperOptions),
+            ScanTask("checkSuDirectory", ::checkSuDirectory),
+            ScanTask("checkExternalStorageArtifacts", ::checkExternalStorageArtifacts),
+            ScanTask("checkRecoveryArtifacts", ::checkRecoveryArtifacts),
+            ScanTask("checkInitDotD", ::checkInitDotD),
+            ScanTask("checkDataLocalTmp", ::checkDataLocalTmp),
+            ScanTask("checkKsuTempRootIntent", ::checkKsuTempRootIntent),
+            ScanTask("checkResetpropModifications", ::checkResetpropModifications),
+            ScanTask("checkAppZygoteSepolicy", ::checkAppZygoteSepolicy),
+            ScanTask("checkContextValidityOracle", ::checkContextValidityOracle),
+            ScanTask("checkSceneDebugfsMount", ::checkSceneDebugfsMount),
+            ScanTask("checkNeoZygiskEnv", ::checkNeoZygiskEnv),
+            ScanTask("checkSKRoot", ::checkSKRoot),
+            ScanTask("checkSelinuxSeqnoOracle", ::checkSelinuxSeqnoOracle),
+            ScanTask("nativeChecks") { NativeChecks().run() },
+            ScanTask("integrityChecks") { IntegrityChecker(context).runAllChecks() }
+        )
+
+        val results = mutableListOf<CheckResult>()
+
+        tasks.forEachIndexed { index, task ->
+            val taskResults = runCatching { task.run() }
+                .getOrElse { error ->
+                    listOf(taskFailure(task.id, error))
+                }
+                .ifEmpty {
+                    listOf(taskSkipped(task.id, "Task returned no check results"))
+                }
+
+            results += taskResults
+            progressCallback(((index + 1) * 100) / tasks.size)
+        }
+
+        return results
+    }
+
+    private fun taskFailure(taskId: String, error: Throwable): CheckResult = CheckResult(
+        id = "scanner.$taskId",
+        name = "$taskId failed",
+        description = "A root detection task failed while executing",
+        category = CheckCategory.SCANNER,
+        severity = Severity.HIGH,
+        status = CheckStatus.ERROR,
+        detail = error.message ?: error.javaClass.name,
+        evidence = mapOf("exception" to error.javaClass.name)
+    )
+
+    private fun taskSkipped(taskId: String, reason: String): CheckResult = CheckResult(
+        id = "scanner.$taskId",
+        name = "$taskId skipped",
+        description = "A root detection task did not return a result",
+        category = CheckCategory.SCANNER,
+        severity = Severity.WARNING,
+        status = CheckStatus.SKIPPED,
+        detail = reason
+    )
+
+    private fun checkSuBinaries(): List<CheckResult> {
+        val found = suPaths.filter { File(it).exists() }
+        val (regularFound, _) = splitOplusMatches(found)
+        val severity = when {
+            DetectorTrust.suBinaryCorroborated(regularFound) -> Severity.HIGH
+            DetectorTrust.suBinaryIsOemBenign(regularFound) -> Severity.WARNING
+            else -> Severity.WARNING
+        }
+        return listOf(det(
+            "su_binary", "SU Binary Paths", CheckCategory.SU_BINARIES, severity,
+            "Checks for su binary in known root paths. HIGH requires SUID/exec or root-dir. LOW for known OEM stock stubs.",
+            regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkRootPackages(): List<CheckResult> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        rootPackages.forEach { pkg ->
+            when {
+                isPackageInstalled(pm, pkg) -> found += pkg
+                pm.getLaunchIntentForPackage(pkg) != null -> found += "$pkg (launchable)"
+            }
+        }
+        val (regularFound, _) = splitOplusMatches(found)
+        return listOf(det(
+            "root_apps", "Root Manager Apps", CheckCategory.ROOT_APPS, Severity.HIGH,
+            "Magisk, KernelSU, APatch, SuperSU, LSPosed and 50+ known packages",
+            regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkPatchedApps(): List<CheckResult> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        patchedApps.forEach { pkg ->
+            when {
+                isPackageInstalled(pm, pkg) -> found += pkg
+                pm.getLaunchIntentForPackage(pkg) != null -> found += "$pkg (launchable)"
+            }
+        }
+        val (regularFound, _) = splitOplusMatches(found)
+        return listOf(det(
+            "patched_apps", "Patched / Modified Apps", CheckCategory.ROOT_APPS, Severity.WARNING,
+            "ReVanced, CorePatch, Play Integrity Fix, TrickyStore, HMA, LSPosed and companion tools",
+            regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkLsposedCompanionApps(): List<CheckResult> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        lsposedHighRiskApps.forEach { (pkg, label) ->
+            when {
+                isPackageInstalled(pm, pkg) -> found += "$label ($pkg)"
+                pm.getLaunchIntentForPackage(pkg) != null -> found += "$label ($pkg launchable)"
+            }
+        }
+        return listOf(det(
+            "lsposed_companions", "LSPosed Companion Apps", CheckCategory.ROOT_APPS, Severity.HIGH,
+            "Detects LSPosed companion apps and modules such as KnoxPatch and Scene",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkMediumRiskTools(): List<CheckResult> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        mediumToolPackages.forEach { (pkg, label) ->
+            when {
+                isPackageInstalled(pm, pkg) -> found += "$label ($pkg)"
+                pm.getLaunchIntentForPackage(pkg) != null -> found += "$label ($pkg launchable)"
+            }
+        }
+        return listOf(det(
+            "medium_risk_tools", "App Patchers / Mod Tools", CheckCategory.ROOT_APPS, Severity.WARNING,
+            "Detects medium-risk app patching and modification tools such as Lucky Patcher",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkWarningApps(): List<CheckResult> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        warningApps.forEach { (pkg, label) ->
+            when {
+                isPackageInstalled(pm, pkg) -> found += "$label ($pkg)"
+                pm.getLaunchIntentForPackage(pkg) != null -> found += "$label ($pkg launchable)"
+            }
+        }
+        return listOf(det(
+            "warning_apps", "Non-Rooted Power Apps", CheckCategory.ROOT_APPS, Severity.WARNING,
+            "Shizuku, Termux, MT Manager, LADB and similar tools are not root by themselves, but they are useful for debugging, shell access and package editing",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkBuildTags(): List<CheckResult> {
+        val tags = Build.TAGS ?: ""
+        return listOf(det(
+            "build_tags", "Build Tags (test-keys)", CheckCategory.BUILD_TAGS, Severity.WARNING,
+            "Release builds must use release-keys, not test-keys",
+            tags.contains("test-keys"), "Build.TAGS=$tags"
+        ))
+    }
+
+    private fun checkDangerousProps(): List<CheckResult> {
+        val found = GetPropCatalog.collectMatches(::getProp, GetPropCatalog.dangerousRootProps)
+        return listOf(det(
+            "dangerous_props", "Dangerous System Props", CheckCategory.SYSTEM_PROPS, Severity.HIGH,
+            "Debuggable builds, unlocked verified boot, adb root and persistent root props",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkRootBinaries(): List<CheckResult> {
+        val found = linkedSetOf<String>()
+        dangerousBinaries.forEach { bin ->
+            binaryPaths.forEach { path ->
+                val file = File("$path$bin")
+                if (file.exists() || file.canExecute()) {
+                    found += file.absolutePath
+                }
+            }
+        }
+        val (regularFound, _) = splitOplusMatches(found)
+        return listOf(det(
+            "root_binaries", "Root Binaries", CheckCategory.BUSYBOX, Severity.HIGH,
+            "Searches for su, busybox, magisk, resetprop, KernelSU and APatch binaries in extended paths",
+            regularFound.isNotEmpty(), regularFound.take(10).joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkWritablePaths(): List<CheckResult> {
+        val writable = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        val protectedPaths = protectedSystemPaths
+        protectedPaths.forEach { path ->
+            if (!trustedLocked && runCatching { File(path).canWrite() }.getOrDefault(false)) {
+                writable += "$path (filesystem write access)"
+            }
+        }
+        try {
+            File("/proc/mounts").forEachLine { line ->
+                val parts = line.split(" ")
+                if (parts.size < 4) return@forEachLine
+                val device = parts[0]
+                val mountPoint = parts[1]
+                val fileSystem = parts[2]
+                val options = parts[3]
+                val exactProtectedMount = protectedPaths.contains(mountPoint)
+                val nestedProtectedMount = protectedPaths.any { mountPoint.startsWith("$it/") }
+                if (exactProtectedMount || nestedProtectedMount) {
+                    val optionList = options.split(",")
+                    val strongSignal = strongRootMountSignal("$device $fileSystem $options", mountPoint, trustedLocked)
+                    val writableLike = optionList.any { it == "rw" } || fileSystem == "overlay" || device.contains("tmpfs") || device.contains("overlay") || device.contains("loop")
+                    if (writableLike && ((!trustedLocked && exactProtectedMount) || strongSignal)) {
+                        writable += "$mountPoint [$device $fileSystem $options]"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        val (regularWritable, _) = splitOplusMatches(writable)
+        return listOf(det(
+            "rw_paths", "Writable System Paths", CheckCategory.WRITABLE_PATHS, Severity.HIGH,
+            "System, vendor and product partitions should not be writable or overlaid on stock builds",
+            regularWritable.isNotEmpty(), regularWritable.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkMagiskFiles(): List<CheckResult> {
+        val found = linkedSetOf<String>()
+        magiskPaths.forEach { path ->
+            if (File(path).exists()) {
+                found += path
+            }
+        }
+        val (regularFound, _) = splitOplusMatches(found)
+        return listOf(det(
+            "magisk_files", "Magisk / KSU / APatch Files", CheckCategory.MAGISK, Severity.HIGH,
+            "Checks Magisk, KernelSU and APatch artifacts under /data/adb, /dev and ramdisk mirrors",
+            regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkFrida(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        fridaProcesses.forEach { name ->
+            if (isProcessRunning(name)) evidence += "process=$name"
+        }
+        val allFridaPorts = (fridaPorts + listOf(27043, 27044, 27047)).distinct()
+        allFridaPorts.forEach { port ->
+            val open = try {
+                val socket = java.net.Socket()
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 150)
+                socket.close()
+                true
+            } catch (_: Exception) { false }
+            if (open) evidence += "port=$port open"
+        }
+        try {
+            File("/proc/self/maps").forEachLine { line ->
+                val lower = line.lowercase()
+                if (lower.contains("frida-agent") || lower.contains("frida-gadget") ||
+                    lower.contains("gum-js") || lower.contains("frida-helper")) {
+                    evidence += line.trim().take(120)
+                }
+            }
+        } catch (_: Exception) {}
+        evidence += collectNetUnixMatches(listOf("frida", "gadget")).take(3)
+        try {
+            File("/proc/self/fd").listFiles()?.forEach { fdEntry ->
+                runCatching {
+                    val target = java.nio.file.Files.readSymbolicLink(fdEntry.toPath()).toString()
+                    val lower = target.lowercase()
+                    if (lower.contains("frida") || lower.contains("gadget") || lower.contains("gum-js")) {
+                        evidence += "fd -> $target"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            File("/proc/net/tcp").forEachLine { line ->
+                val fields = line.trim().split(Regex("\\s+"))
+                if (fields.size < 4 || fields[0] == "sl") return@forEachLine
+                val localAddr = fields[1]
+                val port = localAddr.substringAfter(":").toIntOrNull(16) ?: return@forEachLine
+                val state = fields[3]
+                if (port in listOf(27042, 27043, 27044, 27047) && state == "0A") {
+                    evidence += "/proc/net/tcp: port $port listening"
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "frida", "Frida Instrumentation", CheckCategory.FRIDA, Severity.HIGH,
+            "Checks Frida processes, loopback ports 27042-27047, unix sockets, injected maps, FDs and /proc/net/tcp",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkEmulator(): List<CheckResult> {
+        val strong = mutableListOf<String>()
+        val weak = mutableListOf<String>()
+        val fp = Build.FINGERPRINT ?: ""
+
+        // Strong indicators: unambiguous emulator signatures that stock retail
+        // devices never report. Any one of these alone is conclusive.
+        if (fp.startsWith("generic") || fp.contains(":generic/"))
+            strong += "FINGERPRINT=$fp"
+        if (Build.HARDWARE == "goldfish" || Build.HARDWARE == "ranchu")
+            strong += "HARDWARE=${Build.HARDWARE}"
+        if (Build.MANUFACTURER.equals("Genymotion", ignoreCase = true))
+            strong += "MANUFACTURER=Genymotion"
+        if (Build.PRODUCT in emulatorProducts)
+            strong += "PRODUCT=${Build.PRODUCT}"
+        if (Build.MODEL.contains("Android SDK built for", ignoreCase = true) ||
+            (Build.MODEL.contains("sdk", ignoreCase = true) && Build.MODEL.contains("emulator", ignoreCase = true)))
+            strong += "MODEL=${Build.MODEL}"
+        if (getProp("ro.kernel.qemu") == "1") strong += "ro.kernel.qemu=1"
+        if (getProp("ro.boot.qemu") == "1") strong += "ro.boot.qemu=1"
+
+        // Weak indicators: each one alone shows up on plenty of legitimate retail
+        // devices (empty/unknown BOARD, "Android" brand, x86 tablets), so they
+        // only count as a detection when at least two corroborate.
+        if (Build.BRAND.equals("generic", ignoreCase = true) || Build.BRAND.equals("Android", ignoreCase = true))
+            weak += "BRAND=${Build.BRAND}"
+        if (Build.DEVICE.equals("generic", ignoreCase = true) || Build.DEVICE.startsWith("generic_"))
+            weak += "DEVICE=${Build.DEVICE}"
+        if (Build.BOARD.isNullOrEmpty() || Build.BOARD == "unknown")
+            weak += "BOARD=${Build.BOARD} (unknown board)"
+        if (fp.contains("unknown/unknown"))
+            weak += "FINGERPRINT=$fp"
+        val cpuAbi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        if (cpuAbi.contains("x86") && Build.HARDWARE != null &&
+            !Build.HARDWARE.contains("x86", ignoreCase = true) &&
+            Build.BRAND.equals("generic", ignoreCase = true))
+            weak += "CPU_ABI=$cpuAbi on generic-branded device"
+
+        val detected = strong.isNotEmpty() || weak.size >= 2
+        val indicators = strong + weak
+        return listOf(det(
+            "emulator", "Emulator / Virtual Device", CheckCategory.EMULATOR, Severity.WARNING,
+            "Flags an emulator on any strong QEMU/SDK signature, or when at least two weak build-field indicators corroborate. A single weak signal such as an unknown BOARD or an \"Android\" brand is ignored to avoid false positives on retail devices.",
+            detected, indicators.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkMountPoints(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        val targets = protectedSystemPaths
+        try {
+            File("/proc/mounts").forEachLine { line ->
+                val parts = line.split(" ")
+                if (parts.size < 4) return@forEachLine
+                val device = parts[0]
+                val mountPoint = parts[1]
+                val fileSystem = parts[2]
+                val options = parts[3]
+                val exactProtectedMount = targets.contains(mountPoint)
+                val nestedProtectedMount = targets.any { mountPoint.startsWith("$it/") }
+                val writable = options.split(",").any { it == "rw" }
+                val suspiciousSource = device.startsWith("/dev/block/") || device.startsWith("dm-") || device.contains("overlay") || device.contains("tmpfs")
+                val strongSignal = strongRootMountSignal("$device $fileSystem $options", mountPoint, trustedLocked)
+                val suspiciousMount = writable || fileSystem == "overlay" || suspiciousSource && (device.contains("overlay") || device.contains("tmpfs") || device.contains("loop"))
+                if ((exactProtectedMount || nestedProtectedMount) && suspiciousMount && ((!trustedLocked && exactProtectedMount) || strongSignal)) {
+                    suspicious += "$mountPoint [$device $fileSystem $options]"
+                }
+            }
+        } catch (_: Exception) {}
+        val (regularSuspicious, _) = splitOplusMatches(suspicious)
+        return listOf(det(
+            "mount_rw", "RW System Mount Points", CheckCategory.MOUNT_POINTS, Severity.HIGH,
+            "/proc/mounts shows writable, overlaid or tmpfs-backed system partitions",
+            regularSuspicious.isNotEmpty(), regularSuspicious.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkTestKeys(): List<CheckResult> {
+        val fp = Build.FINGERPRINT ?: ""
+        val detected = fp.contains("test-keys") || fp.contains("dev-keys")
+        return listOf(det(
+            "test_keys", "Test/Dev Keys in Fingerprint", CheckCategory.BUILD_TAGS, Severity.WARNING,
+            "Build.FINGERPRINT should not contain test-keys or dev-keys",
+            detected, if (detected) fp else null
+        ))
+    }
+
+    private fun checkNativeLibMaps(): List<CheckResult> {
+        val found = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        val systemPaths = protectedSystemPaths.map { "$it/" } + "/apex/"
+        // Use the stricter strong-signal keyword set as the primary filter to avoid
+        // false positives from app-private JNI libs whose paths happen to contain a
+        // generic root-framework term (e.g. a vendor lib named "hook_bridge.so").
+        val strongKeywords = HardcodedSignals.strongRuntimeKeywords
+        val broadKeywords  = frameworkKeywords()
+        // Suspicious path context: root staging areas or anonymous mappings.
+        // We explicitly skip normal app library paths (/data/data/, /data/app/)
+        // unless the entry matches a strong keyword.
+        val rootStagingPrefixes = listOf(
+            "/data/adb/", "/debug_ramdisk/", "/sbin/.magisk/",
+            "/dev/magisk/", "/data/local/tmp/"
+        )
+        try {
+            File("/proc/self/maps").forEachLine { line ->
+                val lower = line.lowercase()
+                // Always skip trusted system/apex paths
+                if (systemPaths.any { line.contains(it) }) return@forEachLine
+                // Skip normal app library paths unless a strong keyword hits
+                val isNormalAppPath = lower.contains("/data/data/") || lower.contains("/data/app/")
+                val strongHits = strongKeywords.filter { lower.contains(it) }
+                if (strongHits.isNotEmpty()) {
+                    // Strong keyword match anywhere outside trusted paths → always flag
+                    found += "${strongHits.joinToString(",")} -> ${line.trim().take(120)}"
+                    return@forEachLine
+                }
+                // For broader keywords we require either a suspicious path prefix,
+                // an anonymous/deleted mapping, or an unlocked boot state.
+                if (isNormalAppPath) return@forEachLine
+                val broadHits = broadKeywords.filter { lower.contains(it) }
+                if (broadHits.isEmpty()) return@forEachLine
+                val isRootStagingPath  = rootStagingPrefixes.any { lower.contains(it) }
+                val isAnonymousMapping = lower.contains("memfd:") || lower.contains("(deleted)") || !lower.contains("/")
+                if (isRootStagingPath || isAnonymousMapping || !trustedLocked) {
+                    found += "${broadHits.joinToString(",")} -> ${line.trim().take(120)}"
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "native_lib_maps", "Injected Native Libraries", CheckCategory.MAGISK, Severity.HIGH,
+            "/proc/self/maps contains root-framework libraries outside trusted system paths",
+            found.isNotEmpty(), found.take(6).joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkMagiskTmpfs(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val hasMagiskDevice = File("/dev/magisk").exists()
+        val hasMagiskMirror = File("/sbin/.magisk").exists()
+        if (hasMagiskDevice) evidence += "/dev/magisk exists"
+        if (hasMagiskMirror) evidence += "/sbin/.magisk exists"
+        var sawDebugRamdisk = false
+        try {
+            File("/proc/mounts").forEachLine { line ->
+                val parts = line.split(" ")
+                if (parts.size < 3) return@forEachLine
+                val device = parts[0]
+                val mountPoint = parts[1]
+                val fileSystem = parts[2]
+                if (fileSystem == "tmpfs" && mountPoint == "/sbin") evidence += "tmpfs on /sbin"
+                if (mountPoint == "/debug_ramdisk") {
+                    sawDebugRamdisk = true
+                }
+                if (DetectorTrust.hasExplicitMountRootMarker(line) || (line.contains("overlay") && line.contains("/data/adb"))) {
+                    if (mountPoint.startsWith("/system") || mountPoint.startsWith("/vendor") || mountPoint.startsWith("/product") || mountPoint.startsWith("/odm")) {
+                        evidence += "$mountPoint [$device $fileSystem]"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        if (sawDebugRamdisk && (hasMagiskDevice || hasMagiskMirror || evidence.any { it.contains("/data/adb") || it.contains(".magisk") })) {
+            evidence += "/debug_ramdisk present with root staging traces"
+        }
+        val (regularEvidence, _) = splitOplusMatches(evidence)
+        return listOf(det(
+            "magisk_tmpfs", "Magisk tmpfs / debug_ramdisk", CheckCategory.MAGISK, Severity.HIGH,
+            "Looks for Magisk ramdisk mirrors, tmpfs staging points and overlay-backed mounts",
+            regularEvidence.isNotEmpty(), regularEvidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkKernelSU(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        GetPropCatalog.kernelSuProps.forEach { prop ->
+            val value = getProp(prop)
+            if (value.isNotEmpty()) {
+                evidence += "prop $prop=$value"
+            }
+        }
+        kernelSuPackages.forEach { pkg ->
+            if (isPackageInstalled(context.packageManager, pkg)) {
+                evidence += "package $pkg"
+            }
+        }
+        kernelSuPaths.forEach { path ->
+            if (File(path).exists()) {
+                evidence += path
+            }
+        }
+        evidence += collectNetUnixMatches(listOf("ksu", "kernelsu", "ksunext")).take(4)
+        try {
+            val initMaps = File("/proc/1/maps")
+            if (initMaps.exists()) {
+                initMaps.forEachLine { line ->
+                    val lower = line.lowercase()
+                    if (lower.contains("ksu") || lower.contains("kernelsu") || lower.contains("susfs")) {
+                        evidence += line.trim().take(120)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            val output = Runtime.getRuntime().exec("getprop").inputStream.bufferedReader().readText()
+            if (output.contains("kernelsu", true) || output.contains("ksunext", true) || output.contains("susfs", true)) {
+                evidence += "getprop output leaks KernelSU markers"
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "kernelsu", "KernelSU / KSU Next", CheckCategory.MAGISK, Severity.HIGH,
+            "Checks KernelSU props, sockets, proc nodes, maps and manager packages",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkZygiskModules(): List<CheckResult> {
+        val knownDangerous = knownDangerousModules
+        val detectedModules = linkedSetOf<String>()
+        val genericModules = linkedSetOf<String>()
+        val scanFiles = moduleScanFiles
+        moduleDirs.forEach { dirPath ->
+            File(dirPath).takeIf { it.isDirectory }?.listFiles()?.forEach { module ->
+                val moduleName = module.name.lowercase()
+                val textMatches = mutableSetOf<String>()
+                scanFiles.forEach { fileName ->
+                    val file = File(module, fileName)
+                    if (file.exists()) {
+                        val content = runCatching { file.readText().lowercase() }.getOrNull().orEmpty()
+                        knownDangerous.keys.filter { content.contains(it) }.forEach { textMatches += it }
+                    }
+                }
+                val nameMatch = knownDangerous.keys.firstOrNull { moduleName.contains(it) }
+                val contentMatch = textMatches.firstOrNull()
+                when {
+                    nameMatch != null -> detectedModules += "${module.name} -> ${knownDangerous.getValue(nameMatch)}"
+                    contentMatch != null -> detectedModules += "${module.name} -> ${knownDangerous.getValue(contentMatch)}"
+                    else -> genericModules += module.name
+                }
+            }
+        }
+        val allFound = detectedModules + genericModules
+        val detail = buildString {
+            if (detectedModules.isNotEmpty()) {
+                append("Known dangerous:\n")
+                detectedModules.forEach { appendLine(it) }
+            }
+            if (genericModules.isNotEmpty()) {
+                append("Other modules:\n")
+                genericModules.take(8).forEach { appendLine(it) }
+            }
+        }.trim()
+        return listOf(det(
+            "zygisk_modules", "Magisk / KSU Modules Installed",
+            CheckCategory.MAGISK, Severity.HIGH,
+            "Scans active and pending module directories plus module scripts for hiding and spoofing frameworks",
+            allFound.isNotEmpty(), detail.ifEmpty { null }
+        ))
+    }
+
+    private fun checkSuInPath(): List<CheckResult> {
+        val found = linkedSetOf<String>()
+        val pathValue = System.getenv("PATH").orEmpty()
+        pathValue.split(":").filter { it.isNotBlank() }.forEach { dir ->
+            val file = File("$dir/su")
+            if (file.exists()) {
+                found += file.absolutePath
+            }
+        }
+        val (regularFound, _) = splitOplusMatches(found)
+        val isSuidOrExec = regularFound.any { path ->
+            runCatching {
+                val st = Os.stat(path)
+                (st.st_mode and OsConstants.S_ISUID) != 0 || (st.st_mode and OsConstants.S_IXUSR) != 0
+            }.getOrDefault(false)
+        }
+        val severity = when {
+            isSuidOrExec -> Severity.HIGH
+            else         -> Severity.WARNING
+        }
+        return listOf(det(
+            "su_in_path", "SU in \$PATH", CheckCategory.SU_BINARIES, severity,
+            "Walks PATH for su binaries. HIGH requires SUID or execute bit. Non-executable path hits are LOW.",
+            regularFound.isNotEmpty(), regularFound.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSELinux(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val sysfsValue = runCatching {
+            File("/sys/fs/selinux/enforce").readText().trim()
+        }.getOrNull()
+        val sysfsPermissive = sysfsValue == "0"
+        if (sysfsPermissive) {
+            evidence += "/sys/fs/selinux/enforce=0"
+        }
+        val bootSelinux = getProp("ro.boot.selinux")
+        if (bootSelinux.equals("permissive", ignoreCase = true)) {
+            evidence += "ro.boot.selinux=$bootSelinux"
+        }
+        val isUserBuild = getProp("ro.build.type") == "user"
+        return listOf(det(
+            "selinux", "SELinux Permissive", CheckCategory.SYSTEM_PROPS, Severity.HIGH,
+            "Permissive SELinux is a strong indicator of tampering and often survives root hiding",
+            sysfsPermissive && isUserBuild, evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSelinuxAttrCurrentWrite(): List<CheckResult> = emptyList()
+
+    private fun checkSelinuxDirtyPolicy(): List<CheckResult> = emptyList()
+
+    private fun checkAppZygoteSepolicy(): List<CheckResult> {
+        val result = runCatching { DirtySepolicyClient.query(context) }
+            .getOrDefault("ERROR: query exception")
+        // Adapted from LSPosed/DirtySepolicy result contract:
+        //   "WARNING: ..."  -> root framework detected via dirty sepolicy
+        //   "OK: ..."       -> clean policy, no signals
+        //   "ERROR: ..."    -> sanity gate failed, API broken, or service
+        //                      unavailable. Reported as ERROR, never as a detection.
+        val isWarning = result.startsWith("WARNING:")
+        val severity  = if (isWarning) Severity.HIGH else Severity.WARNING
+        return listOf(det(
+            "app_zygote_sepolicy",
+            "SELinux Policy Tampering (App-Zygote)",
+            CheckCategory.SYSTEM_PROPS,
+            severity,
+            "Runs SELinux policy probes from the app_zygote isolated process. " +
+            "Only WARNING results count as a detection. ERROR is reported as an incomplete check.",
+            isWarning,
+            result.take(500),
+            when {
+                isWarning -> CheckStatus.DETECTED
+                result.startsWith("ERROR: app_zygote unsupported") -> CheckStatus.UNSUPPORTED
+                result.startsWith("ERROR:") -> CheckStatus.ERROR
+                else -> CheckStatus.NOT_DETECTED
+            }
+        ))
+    }
+
+    private fun checkContextValidityOracle(): List<CheckResult> {
+        // Runs the context-validity oracle inside the app_zygote isolated
+        // process (the only app-reachable SELinux domain holding
+        // security:check_context / compute_av). See AppZygote.runContextValidityOracle.
+        val result = runCatching { DirtySepolicyClient.queryContextValidity(context) }
+            .getOrDefault("ERROR: query exception")
+        // Result contract:
+        //   "ROOT: ..."   -> a root framework's SELinux footprint is present
+        //   "CLEAN: ..."  -> no root SELinux contexts in live policy
+        //   "ERROR: ..."  -> gate/self-test failure or service issue (reported as ERROR).
+        val isRoot = result.startsWith("ROOT:")
+        val severity = if (isRoot) Severity.HIGH else Severity.WARNING
+        return listOf(det(
+            "context_validity_oracle",
+            "SELinux Context Validity Oracle (App-Zygote)",
+            CheckCategory.SYSTEM_PROPS,
+            severity,
+            "From the app_zygote isolated process, asks the live kernel policy whether a root " +
+            "framework's SELinux footprint is present via two oracles: raw selinuxfs context " +
+            "validity (e.g. u:object_r:ksu_file:s0) and AVC rule lookup (e.g. untrusted_app -> " +
+            "ksu:binder call). Negative sentinel controls guard against rubber-stamping. Only " +
+            "ROOT counts as a detection; CLEAN is negative and ERROR is reported separately.",
+            isRoot,
+            result.take(500),
+            when {
+                isRoot -> CheckStatus.DETECTED
+                result.startsWith("ERROR: app_zygote unsupported") -> CheckStatus.UNSUPPORTED
+                result.startsWith("ERROR:") -> CheckStatus.ERROR
+                else -> CheckStatus.NOT_DETECTED
+            }
+        ))
+    }
+
+    private fun checkPackageManagerAnomalies(): List<CheckResult> {
+        val anomalies = linkedSetOf<String>()
+        val pm = context.packageManager
+        try {
+            @Suppress("DEPRECATION")
+            val installedPackages = pm.getInstalledPackages(PackageManager.GET_META_DATA or PackageManager.MATCH_UNINSTALLED_PACKAGES)
+            val packageNames = installedPackages.map { it.packageName }.toSet()
+            (rootPackages + patchedApps).forEach { pkg ->
+                if (pkg in packageNames) {
+                    anomalies += pkg
+                }
+                if (pm.getLaunchIntentForPackage(pkg) != null) {
+                    anomalies += "$pkg (launch intent)"
+                }
+            }
+        } catch (_: Exception) {}
+        managerActions.forEach { action ->
+            try {
+                val resolved = pm.queryIntentActivities(Intent(action), PackageManager.MATCH_DEFAULT_ONLY)
+                if (resolved.isNotEmpty()) {
+                    resolved.mapNotNull { it.activityInfo?.packageName }.forEach { anomalies += "$action -> $it" }
+                }
+            } catch (_: Exception) {}
+        }
+        val (regularAnomalies, _) = splitOplusMatches(anomalies)
+        return listOf(det(
+            "pm_anomalies", "Package Manager Check", CheckCategory.ROOT_APPS, Severity.HIGH,
+            "Scans installed packages, launch intents and known manager actions for hidden root apps",
+            regularAnomalies.isNotEmpty(), regularAnomalies.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun frameworkKeywords(): List<String> = DetectorTrust.frameworkKeywords()
+
+    private fun isOplusMarker(value: String): Boolean = DetectorTrust.isOplusMarker(value)
+
+    private fun splitOplusMatches(values: Collection<String>): Pair<List<String>, List<String>> {
+        val regular = mutableListOf<String>()
+        val oplus = mutableListOf<String>()
+        values.forEach { value ->
+            if (isOplusMarker(value)) {
+                oplus += value
+            } else {
+                regular += value
+            }
+        }
+        return regular to oplus
+    }
+
+    private fun isPackageInstalled(pm: PackageManager, packageName: String): Boolean {
+        val flagSets = listOf(
+            PackageManager.GET_META_DATA,
+            PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.GET_META_DATA,
+            0
+        )
+        return flagSets.any { flags ->
+            try {
+                pm.getPackageInfo(packageName, flags)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    private fun collectNetUnixMatches(keywords: List<String>): List<String> {
+        val matches = linkedSetOf<String>()
+        try {
+            File("/proc/net/unix").forEachLine { line ->
+                val lower = line.lowercase()
+                if (keywords.any { lower.contains(it) }) {
+                    matches += line.trim().takeLast(120)
+                }
+            }
+        } catch (_: Exception) {}
+        return matches.toList()
+    }
+
+    private fun findZygotePid(): String? = try {
+        File("/proc").listFiles()?.firstOrNull { entry ->
+            val pid = entry.name.toIntOrNull() ?: return@firstOrNull false
+            val cmdline = File("/proc/$pid/cmdline")
+            cmdline.exists() && cmdline.readText().contains("zygote")
+        }?.name
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun readStatusValue(field: String): String? = try {
+        File("/proc/self/status").useLines { lines ->
+            lines.firstOrNull { it.startsWith(field) }?.substringAfter(":")?.trim()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun bootLooksLockedAndNormal(): Boolean = DetectorTrust.bootLooksTrustedLocked()
+
+    private fun strongRootMountSignal(signature: String, mountPoint: String, trustedLocked: Boolean): Boolean =
+        DetectorTrust.hasRootMountSignal(signature, mountPoint, trustedLocked)
+
+    private fun isSuspiciousDeletedOrMemfdMap(line: String, trustedLocked: Boolean): Boolean =
+        DetectorTrust.isSuspiciousDeletedOrMemfdMap(line, trustedLocked)
+
+    private fun det(
+        id: String, name: String, cat: CheckCategory, sev: Severity,
+        desc: String, detected: Boolean, detail: String?,
+        status: CheckStatus? = null
+    ) = CheckResult(
+        id = id,
+        name = name,
+        description = desc,
+        category = cat,
+        severity = sev,
+        status = status ?: if (detected) CheckStatus.DETECTED else CheckStatus.NOT_DETECTED,
+        detail = detail
+    )
+
+    private fun getProp(key: String): String = try {
+        val p = Runtime.getRuntime().exec("getprop $key")
+        val finished = p.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)
+        if (!finished) { p.destroyForcibly(); "" }
+        else p.inputStream.bufferedReader().readLine()?.trim() ?: ""
+    } catch (_: Exception) { "" }
+
+    private fun isProcessRunning(name: String): Boolean = try {
+        Runtime.getRuntime().exec("ps -A").inputStream
+            .bufferedReader().lineSequence().any { it.contains(name) }
+    } catch (_: Exception) { false }
+
+    private fun parseUtcPropDate(value: String): Date? {
+        val trimmed = value.trim()
+        val seconds = trimmed.toLongOrNull() ?: return null
+        if (seconds <= 0L) return null
+        return Date(seconds * 1000L)
+    }
+
+    private data class FingerprintParts(
+        val brand: String,
+        val product: String,
+        val device: String,
+        val release: String,
+        val buildId: String,
+        val incremental: String,
+        val buildType: String,
+        val tags: String
+    )
+
+    private fun parseFingerprint(value: String): FingerprintParts? {
+        val trimmed = value.trim()
+        val sections = trimmed.split(':', limit = 3)
+        if (trimmed.isEmpty() || sections.size != 3) return null
+        val prefixParts = sections[0].split('/')
+        val buildParts = sections[1].split('/')
+        val typeParts = sections[2].split('/', limit = 2)
+        if (prefixParts.size < 3 || buildParts.size < 3 || typeParts.isEmpty()) return null
+        return FingerprintParts(
+            brand = prefixParts[0],
+            product = prefixParts[1],
+            device = prefixParts[2],
+            release = buildParts[0],
+            buildId = buildParts[1],
+            incremental = buildParts[2],
+            buildType = typeParts[0],
+            tags = typeParts.getOrNull(1).orEmpty()
+        )
+    }
+
+    // Some OEMs use a shared system partition image across device models,
+    // making ro.system.build.fingerprint differ legitimately from the
+    // device-specific ro.build.fingerprint. Known patterns:
+    //   - Pixel:   google/generic_system_google/generic (A17+)
+    //   - Xiaomi:  Xiaomi/missi/missi (shared platform image)
+    //   - Others:  product/device matching "generic" or "missi"
+    private fun isGenericSystemImage(parts: FingerprintParts): Boolean {
+        val product = parts.product.lowercase()
+        val device = parts.device.lowercase()
+        return product == "generic" || product.startsWith("generic_") ||
+            device == "generic" || device.startsWith("generic_") ||
+            product == "missi" || device == "missi"
+    }
+
+    private fun compatibleIncremental(left: String, right: String): Boolean {
+        if (left == right) return true
+        if (left.startsWith(right) || right.startsWith(left)) return true
+        val normalizedLeft = left.substringBefore('_')
+        val normalizedRight = right.substringBefore('_')
+        if (normalizedLeft.isNotBlank() && normalizedLeft == normalizedRight) return true
+        val tokenizedLeft = left.replace(Regex("[^A-Za-z0-9]+"), " ").trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        val tokenizedRight = right.replace(Regex("[^A-Za-z0-9]+"), " ").trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        return tokenizedLeft.isNotEmpty() && tokenizedRight.isNotEmpty() && tokenizedLeft.any { token ->
+            token.length >= 6 && tokenizedRight.any { other -> token == other || token.startsWith(other) || other.startsWith(token) }
+        }
+    }
+
+    private fun runtimeFingerprintMatches(candidate: String, reference: String): Boolean {
+        if (candidate == reference) return true
+        val parsedCandidate = parseFingerprint(candidate) ?: return false
+        val parsedReference = parseFingerprint(reference) ?: return false
+        return parsedCandidate.brand == parsedReference.brand &&
+            parsedCandidate.release == parsedReference.release &&
+            parsedCandidate.buildId == parsedReference.buildId &&
+            parsedCandidate.buildType == parsedReference.buildType &&
+            parsedCandidate.tags == parsedReference.tags &&
+            compatibleIncremental(parsedCandidate.incremental, parsedReference.incremental)
+    }
+
+    private fun crossPartitionFingerprintMismatch(
+        buildFingerprint: String,
+        systemFingerprint: String,
+        trustedLocked: Boolean
+    ): String? {
+        if (buildFingerprint.isBlank() || systemFingerprint.isBlank()) return null
+        if (buildFingerprint == systemFingerprint) return null
+        val build = parseFingerprint(buildFingerprint) ?: return if (trustedLocked) null else "ro.build.fingerprint differs from ro.system.build.fingerprint"
+        val system = parseFingerprint(systemFingerprint) ?: return if (trustedLocked) null else "ro.build.fingerprint differs from ro.system.build.fingerprint"
+
+        val hardMismatch = build.brand != system.brand ||
+            build.release != system.release ||
+            build.buildId != system.buildId ||
+            build.buildType != system.buildType ||
+            build.tags != system.tags
+        if (hardMismatch) {
+            return "ro.build and ro.system fingerprints disagree on core build fields"
+        }
+
+        // Skip incremental mismatch when one side is a generic/shared system
+        // image. The generic build and device build come from different
+        // pipelines and naturally have different incrementals.
+        if (!isGenericSystemImage(build) && !isGenericSystemImage(system) &&
+            !compatibleIncremental(build.incremental, system.incremental)) {
+            return "ro.build and ro.system fingerprints disagree on build incremental"
+        }
+
+        // Skip the codename comparison when one side is a generic/shared system
+        // image, otherwise every stock A17+ Pixel trips the product/device check.
+        if (!trustedLocked && !isGenericSystemImage(build) && !isGenericSystemImage(system) &&
+            build.product != system.product && build.device != system.device) {
+            return "ro.build and ro.system fingerprints disagree on product/device"
+        }
+
+        return null
+    }
+
+    private fun parsePatchDate(value: String): Date? {
+        val trimmed = value.trim()
+        if (!Regex("""\d{4}-\d{2}-\d{2}""").matches(trimmed)) return null
+        return runCatching {
+            SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+                isLenient = false
+            }.parse(trimmed)
+        }.getOrNull()
+    }
+
+    private fun parseKernelBuildDate(): Date? {
+        val candidates = linkedSetOf<String>()
+        runCatching { candidates += File("/proc/version").readText() }
+        runCatching {
+            val uname = Runtime.getRuntime().exec("uname -v").inputStream.bufferedReader().readText().trim()
+            if (uname.isNotEmpty()) candidates += uname
+        }
+        val formatters = listOf(
+            SimpleDateFormat("EEE MMM d HH:mm:ss z yyyy", Locale.US),
+            SimpleDateFormat("EEE MMM dd HH:mm:ss z yyyy", Locale.US)
+        ).onEach {
+            it.timeZone = TimeZone.getTimeZone("UTC")
+            it.isLenient = false
+        }
+        val patterns = listOf(
+            Regex("""[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+[A-Z]{2,5}\s+\d{4}"""),
+            Regex("""[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+UTC\s+\d{4}""")
+        )
+        candidates.forEach { raw ->
+            patterns.forEach { regex ->
+                regex.find(raw)?.value?.let { match ->
+                    formatters.forEach { formatter ->
+                        runCatching { formatter.parse(match) }.getOrNull()?.let { return it }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun formatDate(value: Date?): String {
+        if (value == null) return "unknown"
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(value)
+    }
+
+    private fun diffDays(a: Date, b: Date): Long =
+        kotlin.math.abs(a.time - b.time) / 86_400_000L
+
+    private fun collectPatchDates(): LinkedHashMap<String, Date> {
+        val collected = linkedMapOf<String, Date>()
+        val patchProps = linkedMapOf(
+            "android_patch" to (Build.VERSION.SECURITY_PATCH ?: ""),
+            "build_patch" to getProp("ro.build.version.security_patch"),
+            "vendor_patch" to getProp("ro.vendor.build.version.security_patch"),
+            "system_ext_patch" to getProp("ro.system_ext.build.version.security_patch"),
+            "product_patch" to getProp("ro.product.build.version.security_patch"),
+            "odm_patch" to getProp("ro.odm.build.version.security_patch"),
+            "bootimage_patch" to getProp("ro.bootimage.build.version.security_patch")
+        )
+        patchProps.forEach { (label, raw) ->
+            parsePatchDate(raw)?.let { collected[label] = it }
+        }
+        val buildUtcProps = linkedMapOf(
+            "bootimage_utc" to getProp("ro.bootimage.build.date.utc")
+        )
+        buildUtcProps.forEach { (label, raw) ->
+            parseUtcPropDate(raw)?.let { collected[label] = it }
+        }
+        return collected
+    }
+
+        private fun checkKernelCmdline(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        try {
+            val cmdline = File("/proc/cmdline").readText()
+            kernelCmdlineFlags.forEach { flag ->
+                if (cmdline.contains(flag)) {
+                    suspicious += flag
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "kernel_cmdline",
+            "Kernel Boot Parameters",
+            CheckCategory.SYSTEM_PROPS,
+            Severity.HIGH,
+            "Checks /proc/cmdline for insecure boot flags, unlocked AVB and permissive SELinux",
+            suspicious.isNotEmpty(),
+            suspicious.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+        private fun checkEnvHooks(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        try {
+            val env = envKeys.associateWith { System.getenv(it) }
+            env.forEach { (key, value) ->
+                val current = value.orEmpty()
+                val lower = current.lowercase()
+                if (current.isNotEmpty() && (frameworkKeywords().any { lower.contains(it) } || lower.contains("/data/") || lower.contains("/tmp/") || lower.contains("/debug_ramdisk"))) {
+                    suspicious += "$key=$current"
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "env_hooks",
+            "Environment Hooking",
+            CheckCategory.MAGISK,
+            Severity.WARNING,
+            "Suspicious preload, linker and classpath values leaking root frameworks or injected files",
+            suspicious.isNotEmpty(),
+            suspicious.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+        private fun checkDevSockets(): List<CheckResult> {
+        val found = linkedSetOf<String>()
+        val keywords = devSocketKeywords
+        try {
+            File("/dev/socket").listFiles()?.forEach { file ->
+                val name = file.name.lowercase()
+                if (keywords.any { name.contains(it) }) {
+                    found += file.absolutePath
+                }
+            }
+        } catch (_: Exception) {}
+        found += collectNetUnixMatches(keywords).take(6)
+        return listOf(det(
+            "dev_sockets",
+            "Suspicious Dev Sockets",
+            CheckCategory.MAGISK,
+            Severity.HIGH,
+            "Scans /dev/socket and /proc/net/unix for Magisk, KernelSU, APatch and LSPosed sockets",
+            found.isNotEmpty(),
+            found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+        private fun checkZygoteInjection(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        try {
+            val zygotePid = findZygotePid()
+            if (zygotePid != null) {
+                File("/proc/$zygotePid/maps").forEachLine { line ->
+                    val lower = line.lowercase()
+                    val matches = frameworkKeywords().filter { lower.contains(it) }
+                    if (matches.isNotEmpty()) {
+                        suspicious += "${matches.joinToString(",")} -> ${line.trim().take(120)}"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "zygote_injection",
+                "Zygote Injection",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Checks zygote memory maps for Zygisk, LSPosed, Riru, KernelSU and APatch artifacts",
+                suspicious.isNotEmpty(),
+                suspicious.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+        private fun checkOverlayFS(): List<CheckResult> {
+        val overlays = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        try {
+            File("/proc/mounts").forEachLine { line ->
+                val parts = line.split(" ")
+                if (parts.size < 4) return@forEachLine
+                val mountPoint = parts[1]
+                if (
+                    mountPoint.startsWith("/system") ||
+                    mountPoint.startsWith("/system_ext") ||
+                    mountPoint.startsWith("/vendor") ||
+                    mountPoint.startsWith("/product") ||
+                    mountPoint.startsWith("/odm")
+                ) {
+                    if (strongRootMountSignal(line, mountPoint, trustedLocked)) {
+                        overlays += line.take(160)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "overlayfs",
+                "OverlayFS System Modification",
+                CheckCategory.MAGISK,
+                Severity.WARNING,
+                "Detects overlay-backed system mounts, Magisk magic mount traces and /data/adb-backed overlays",
+                overlays.isNotEmpty(),
+                overlays.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+        private fun checkZygoteFDLeak(): List<CheckResult> {
+        val leaks = linkedSetOf<String>()
+        try {
+            val zygotePid = findZygotePid() ?: return listOf(
+                det(
+                    "zygote_fd",
+                    "Zygote FD Leak",
+                    CheckCategory.MAGISK,
+                    Severity.HIGH,
+                    "Detects file descriptor leaks from Zygisk, LSPosed, Riru, KernelSU and APatch into zygote",
+                    false,
+                    "zygote process could not be located",
+                    CheckStatus.SKIPPED
+                )
+            )
+            File("/proc/$zygotePid/fd").listFiles()?.forEach { entry ->
+                val target = runCatching { entry.canonicalPath.lowercase() }.getOrDefault("")
+                if (frameworkKeywords().any { target.contains(it) }) {
+                    leaks += target
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "zygote_fd",
+                "Zygote FD Leak",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Detects file descriptor leaks from Zygisk, LSPosed, Riru, KernelSU and APatch into zygote",
+                leaks.isNotEmpty(),
+                leaks.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+        private fun checkProcessCapabilities(): List<CheckResult> {
+        val elevated = linkedSetOf<String>()
+        val capEff = readStatusValue("CapEff")
+        if (!capEff.isNullOrEmpty()) {
+            val caps = capEff.toLongOrNull(16) ?: 0L
+            val dangerousCaps = 0x0000000000000001L or
+                    0x0000000000000002L or
+                    0x0000000000000004L or
+                    0x0000000000002000L or
+                    0x0000000000004000L or
+                    0x0000000000008000L or
+                    0x0000000000200000L
+            val rootLevelCaps = 0x3fffffffffffffffL
+            if (caps and dangerousCaps != 0L || caps >= rootLevelCaps) {
+                elevated += "CapEff=0x$capEff (elevated effective capabilities)"
+            }
+        }
+        return listOf(
+            det(
+                "process_caps",
+                "Linux Capabilities",
+                CheckCategory.SYSTEM_PROPS,
+                Severity.HIGH,
+                "Process has dangerous effective Linux capabilities — indicates root or escalation",
+                elevated.isNotEmpty(),
+                elevated.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun collectSystemBuildDates(): LinkedHashMap<String, Date> {
+        val out = linkedMapOf<String, Date>()
+        val buildTimeMs = Build.TIME
+        if (buildTimeMs > 0L) out["system_build_time"] = Date(buildTimeMs)
+        val utcRaw = getProp("ro.build.date.utc")
+        utcRaw.toLongOrNull()?.let { secs ->
+            if (secs > 0L) out["ro.build.date.utc"] = Date(secs * 1000L)
+        }
+        val vendorUtc = getProp("ro.vendor.build.date.utc")
+        vendorUtc.toLongOrNull()?.let { secs ->
+            if (secs > 0L) out["ro.vendor.build.date.utc"] = Date(secs * 1000L)
+        }
+        return out
+    }
+
+    private fun checkKernelPatchWindow(): List<CheckResult> {
+        val kernelDate = parseKernelBuildDate()
+        val patchDates = collectPatchDates()
+        val systemDates = collectSystemBuildDates()
+        val allReferences = linkedMapOf<String, Date>().apply {
+            putAll(systemDates)
+            putAll(patchDates)
+        }
+
+        if (kernelDate == null || allReferences.isEmpty()) {
+            return listOf(det(
+                "kernel_patch_window",
+                "Kernel / Patch Window",
+                CheckCategory.SYSTEM_PROPS,
+                Severity.WARNING,
+                "Checks whether kernel build date is consistent with system build and security patch dates",
+                false, null
+            ))
+        }
+
+        val results = mutableListOf<CheckResult>()
+
+        val newerEvidence = linkedSetOf<String>()
+        var newerSeverity = Severity.WARNING
+        val newestRef = allReferences.maxByOrNull { it.value.time }!!
+        if (kernelDate.after(newestRef.value)) {
+            val deltaMs = kernelDate.time - newestRef.value.time
+            val deltaDays = deltaMs / 86_400_000L
+            // Grace period: OEM GKI and vendor kernel pipelines routinely produce
+            // kernels 30–60+ days newer than the system image timestamp. Samsung,
+            // Google, OnePlus and others all exhibit this in stock builds.
+            // We use a flat 90-day threshold regardless of boot state —
+            // environment spoofing (Magisk/KSU resetprop) can make boot props
+            // appear locked, so we do not trust that signal for this check.
+            // Only deltas beyond 90 days indicate a custom kernel; beyond
+            // 180 days is a very strong signal worth HIGH severity.
+            val graceDays = 90L
+            if (deltaDays > graceDays) {
+                newerSeverity = if (deltaDays > 180L) Severity.HIGH else Severity.WARNING
+                newerEvidence += "kernel_build=${formatDate(kernelDate)}"
+                newerEvidence += "newest_reference=${newestRef.key}:${formatDate(newestRef.value)}"
+                newerEvidence += "kernel_is_${deltaDays}d_newer_than_system (threshold=${graceDays}d)"
+                newerEvidence += "indicates_aftermarket_kernel_flashed_post_OEM"
+                systemDates.forEach { (k, v) ->
+                    if (kernelDate.after(v)) {
+                        val d = (kernelDate.time - v.time) / 86_400_000L
+                        newerEvidence += "$k=${formatDate(v)} (kernel +${d}d)"
+                    }
+                }
+                patchDates.forEach { (k, v) ->
+                    if (kernelDate.after(v)) {
+                        val d = (kernelDate.time - v.time) / 86_400_000L
+                        newerEvidence += "$k=${formatDate(v)} (kernel +${d}d)"
+                    }
+                }
+            }
+        }
+        results += det(
+            "kernel_newer_than_system",
+            "Kernel Newer Than System / Security Patch",
+            CheckCategory.SYSTEM_PROPS,
+            newerSeverity,
+            "Kernel build date is more than 90 days newer than the system image and security patch — indicates an aftermarket custom kernel flashed independently of the OEM update",
+            newerEvidence.isNotEmpty(),
+            newerEvidence.joinToString("\n").ifEmpty { null }
+        )
+
+        return results
+    }
+
+        private fun checkSpoofedProps(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        suspicious += GetPropCatalog.collectMatches(::getProp, GetPropCatalog.spoofedBootProps)
+        return listOf(
+            det(
+                "boot_state",
+                "Bootloader / VerifiedBoot State",
+                CheckCategory.SYSTEM_PROPS,
+                Severity.HIGH,
+                "Detects unlocked or tampered AVB, dm-verity and warranty state props",
+                suspicious.isNotEmpty(),
+                suspicious.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+        private fun checkSuspiciousMountSources(): List<CheckResult> {
+        val mounts = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        try {
+            File("/proc/mounts").forEachLine { line ->
+                val parts = line.split(" ")
+                if (parts.size < 3) return@forEachLine
+                val device = parts[0]
+                val mountPoint = parts[1]
+                val fileSystem = parts[2]
+                val protectedMount = protectedSystemPaths.any { mountPoint.startsWith(it) }
+                if (protectedMount && strongRootMountSignal("$device [$fileSystem]", mountPoint, trustedLocked)) {
+                    mounts += "$device -> $mountPoint [$fileSystem]"
+                }
+            }
+        } catch (_: Exception) {}
+        val (regularMounts, _) = splitOplusMatches(mounts)
+        return listOf(
+            det(
+                "suspicious_mount",
+                "Suspicious System Mount Source",
+                CheckCategory.MOUNT_POINTS,
+                Severity.HIGH,
+                "System partitions should not be backed by overlay, tmpfs or loop devices",
+                regularMounts.isNotEmpty(),
+                regularMounts.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkBinderServices(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val exactDangerousServices = setOf(
+            "magiskd", "zygiskd", "zygisk", "tricky_store", "trickystore",
+            "ksud", "kernelsu", "lsposed", "lspd", "riru"
+        )
+        try {
+            val process = Runtime.getRuntime().exec("service list")
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            output.lineSequence().forEach { line ->
+                val lower = line.lowercase()
+                if (exactDangerousServices.any { svc ->
+                    Regex("""(^|[^a-z0-9_])${Regex.escape(svc)}([^a-z0-9_]|$)""").containsMatchIn(lower)
+                }) {
+                    suspicious += line.trim().take(160)
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "binder_services",
+                "Runtime Service List",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Looks for exact root daemon service names in Android binder service list",
+                suspicious.isNotEmpty(),
+                suspicious.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkProcessEnvironment(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        try {
+            System.getenv().forEach { (key, value) ->
+                val lower = "$key=$value".lowercase()
+                if (frameworkKeywords().any { lower.contains(it) } || lower.contains("/data/adb") || lower.contains("/debug_ramdisk")) {
+                    suspicious += "$key=$value"
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "env_scan",
+                "Environment Variable Scan",
+                CheckCategory.MAGISK,
+                Severity.WARNING,
+                "Environment variables leaking root frameworks, adb staging paths or hidden overlays",
+                suspicious.isNotEmpty(),
+                suspicious.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkInitRcRootTraces(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val markers = setOf(
+            "magisk", "zygisk", "lsposed", "riru", "kernelsu",
+            "ksud", "apatch", "shamiko", "trickystore", "susfs"
+        )
+
+        fun containsToken(text: String, token: String): Boolean {
+            return Regex("""(^|[^a-z0-9_])${Regex.escape(token)}([^a-z0-9_]|$)""").containsMatchIn(text)
+        }
+
+        val initTargets = listOf(
+            File("/system/etc/init"),
+            File("/system_ext/etc/init"),
+            File("/vendor/etc/init"),
+            File("/product/etc/init"),
+            File("/odm/etc/init"),
+            File("/init")
+        )
+
+        initTargets.forEach { target ->
+            try {
+                val files = if (target.isDirectory) {
+                    target.listFiles()?.filter { it.isFile && it.extension == "rc" }.orEmpty()
+                } else if (target.isFile && target.extension == "rc") {
+                    listOf(target)
+                } else {
+                    emptyList()
+                }
+                files.forEach { file ->
+                    if (!file.canRead()) return@forEach
+                    file.useLines { lines ->
+                        lines.forEach { line ->
+                            val lower = line.trim().lowercase()
+                            if (markers.any { containsToken(lower, it) }) {
+                                suspicious += "${file.path}: ${line.trim().take(120)}"
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        return listOf(
+            det(
+                "init_rc_root",
+                "Init RC Root Traces",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Scans readable init rc files for root framework services, imports and daemon traces",
+                suspicious.isNotEmpty(),
+                suspicious.take(8).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkRootSepolicyTraces(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val markers = setOf(
+            "magisk", "zygisk", "lsposed", "riru", "kernelsu",
+            "ksud", "apatch", "shamiko", "trickystore", "susfs", "resetprop"
+        )
+        val sepolicyTargets = listOf(
+            "/vendor/etc/selinux/vendor_sepolicy.cil",
+            "/system_ext/etc/selinux/system_ext_sepolicy.cil",
+            "/product/etc/selinux/product_sepolicy.cil",
+            "/odm/etc/selinux/odm_sepolicy.cil",
+            "/system/etc/selinux/plat_sepolicy.cil"
+        )
+
+        fun containsToken(text: String, token: String): Boolean {
+            return Regex("""(^|[^a-z0-9_])${Regex.escape(token)}([^a-z0-9_]|$)""").containsMatchIn(text)
+        }
+
+        sepolicyTargets.forEach { path ->
+            val file = File(path)
+            if (!file.exists() || !file.canRead()) return@forEach
+            val content = runCatching { file.readText().lowercase() }.getOrDefault("")
+            val hits = markers.filter { containsToken(content, it) }
+            if (hits.isNotEmpty()) {
+                suspicious += "$path -> ${hits.distinct().joinToString(",")}"
+            }
+        }
+
+        return listOf(
+            det(
+                "root_sepolicy",
+                "Root Sepolicy Traces",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Scans readable sepolicy cil files for Magisk, LSPosed, KernelSU, APatch and hide-bypass traces",
+                suspicious.isNotEmpty(),
+                suspicious.take(6).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+        private fun checkHiddenMagiskModules(): List<CheckResult> {
+        val detected = linkedSetOf<String>()
+        val keywords = hiddenModuleKeywords
+        val scanFiles = moduleScanFiles
+        try {
+            moduleDirs.forEach { dirPath ->
+                File(dirPath).listFiles()?.forEach { module ->
+                    val moduleName = module.name.lowercase()
+                    if (keywords.any { moduleName.contains(it) }) {
+                        detected += module.name
+                        return@forEach
+                    }
+                    val hit = scanFiles.any { fileName ->
+                        val file = File(module, fileName)
+                        file.exists() && runCatching { file.readText().lowercase() }.getOrDefault("").let { content ->
+                            keywords.any { content.contains(it) }
+                        }
+                    }
+                    if (hit) {
+                        detected += module.name
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "hidden_modules",
+                "Hidden Magisk Modules",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Detects hidden or pending Magisk modules through names and module scripts",
+                detected.isNotEmpty(),
+                detected.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkMountInfoConsistency(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+
+        fun readMountInfo(path: String): Map<String, String> {
+            val result = linkedMapOf<String, String>()
+            try {
+                File(path).forEachLine { line ->
+                    val parts = line.split(" ")
+                    val sep = parts.indexOf("-")
+                    if (parts.size < 10 || sep == -1) return@forEachLine
+                    val mountPoint = parts[4]
+                    val fileSystem = parts.getOrNull(sep + 1).orEmpty()
+                    val source = parts.getOrNull(sep + 2).orEmpty()
+                    if (DetectorTrust.shouldTrackSensitiveMount(mountPoint)) {
+                        result[mountPoint] = "$source [$fileSystem]"
+                    }
+                }
+            } catch (_: Exception) {}
+            return result
+        }
+
+        val trustedLocked = bootLooksLockedAndNormal()
+        val selfMounts = readMountInfo("/proc/self/mountinfo")
+        val initMounts = readMountInfo("/proc/1/mountinfo")
+        selfMounts.forEach { (mountPoint, selfSignature) ->
+            val initSignature = initMounts[mountPoint]
+            if (initSignature == null) {
+                if (strongRootMountSignal(selfSignature, mountPoint, trustedLocked)) {
+                    suspicious += "$mountPoint self-only=$selfSignature"
+                }
+            } else if (initSignature != selfSignature) {
+                val combined = "$selfSignature :: $initSignature"
+                if (strongRootMountSignal(combined, mountPoint, trustedLocked)) {
+                    suspicious += "$mountPoint self=$selfSignature init=$initSignature"
+                }
+            }
+        }
+
+        return listOf(
+            det(
+                "mountinfo_consistency",
+                "MountInfo Consistency",
+                CheckCategory.MOUNT_POINTS,
+                Severity.HIGH,
+                "Only flags mount namespace differences when root-specific overlays, adb mounts or Magisk-like traces are present",
+                suspicious.isNotEmpty(),
+                suspicious.take(8).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkMemfdArtifacts(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        var anonymousRwx = 0
+        try {
+            File("/proc/self/maps").forEachLine { line ->
+                val lower = line.lowercase()
+                val ignoredAnon = lower.contains("[stack") || lower.contains("[anon:dalvik") || lower.contains("[anon:art") || lower.contains("[anon:scudo")
+                if ((line.contains("rwxp") || line.contains("r-xs")) && !ignoredAnon && frameworkKeywords().any { lower.contains(it) }) {
+                    anonymousRwx++
+                }
+                if (isSuspiciousDeletedOrMemfdMap(line, trustedLocked)) {
+                    suspicious += line.trim().take(140)
+                }
+            }
+        } catch (_: Exception) {}
+        if (anonymousRwx > 4) {
+            suspicious += "framework_rwx_pages=$anonymousRwx"
+        }
+        return listOf(
+            det(
+                "memfd_injection",
+                "Memfd / Deleted Injection Maps",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Only flags deleted or memfd mappings when they are tied to hook frameworks or executable injected payloads",
+                suspicious.isNotEmpty(),
+                suspicious.take(8).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkPropertyConsistency(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val debuggable = getProp("ro.debuggable").lowercase()
+        val secure = getProp("ro.secure").lowercase()
+        val buildType = getProp("ro.build.type").lowercase()
+        val buildTags = getProp("ro.build.tags").lowercase()
+        val vbmetaState = getProp("ro.boot.vbmeta.device_state").lowercase()
+        val verifiedBoot = getProp("ro.boot.verifiedbootstate").lowercase()
+        val flashLocked = getProp("ro.boot.flash.locked").lowercase()
+        val warrantyBit = getProp("ro.boot.warranty_bit").lowercase().ifEmpty { getProp("ro.warranty_bit").lowercase() }
+        val secureBootLock = getProp("ro.secureboot.lockstate").lowercase()
+
+        if (debuggable == "1" && secure == "1") {
+            suspicious += "ro.debuggable=1 with ro.secure=1"
+        }
+        if (buildTags.contains("release-keys") && (buildType == "userdebug" || buildType == "eng")) {
+            suspicious += "release-keys with ro.build.type=$buildType"
+        }
+        if (verifiedBoot == "green" && vbmetaState == "unlocked") {
+            suspicious += "green verified boot with vbmeta unlocked"
+        }
+        if (flashLocked == "1" && (vbmetaState == "unlocked" || verifiedBoot == "orange" || verifiedBoot == "yellow")) {
+            suspicious += "flash locked but boot state says unlocked"
+        }
+        if ((verifiedBoot == "orange" || verifiedBoot == "yellow") && (flashLocked == "1" || vbmetaState == "locked")) {
+            suspicious += "verified boot is $verifiedBoot while lock state looks locked"
+        }
+        if (warrantyBit == "1" && flashLocked == "0") {
+            suspicious += "warranty bit tripped and bootloader unlocked"
+        }
+        if (secureBootLock == "unlocked" && flashLocked == "1") {
+            suspicious += "secureboot lockstate says unlocked while flash state says locked"
+        }
+
+        return listOf(
+            det(
+                "prop_consistency",
+                "Property Consistency",
+                CheckCategory.SYSTEM_PROPS,
+                Severity.HIGH,
+                "Flags inconsistent verified boot, build and security props often produced by resetprop spoofing",
+                suspicious.isNotEmpty(),
+                suspicious.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkBuildFieldCoherence(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        val propFingerprint = getProp("ro.build.fingerprint")
+        val propTags = getProp("ro.build.tags")
+        val propType = getProp("ro.build.type")
+        val systemFingerprint = getProp("ro.system.build.fingerprint")
+        val runtimeFingerprint = Build.FINGERPRINT
+
+        if (runtimeFingerprint.isNotBlank() && propFingerprint.isNotBlank()) {
+            val runtimeMatchesBuild = runtimeFingerprintMatches(runtimeFingerprint, propFingerprint)
+            val runtimeMatchesSystem = systemFingerprint.isNotBlank() && runtimeFingerprintMatches(runtimeFingerprint, systemFingerprint)
+            if (!runtimeMatchesBuild && !runtimeMatchesSystem) {
+                suspicious += "Build.FINGERPRINT differs from live system fingerprints"
+            }
+        }
+        // Build.TAGS and Build.TYPE are baked into the Java framework at zygote fork time.
+        // On locked/trusted stock devices some OEMs legitimately ship different values in the
+        // live property system vs what the framework constant exposes (e.g. a vendor-added suffix
+        // on tags, or a build variant difference). Only flag these when the device is NOT
+        // trusted-locked — on an unlocked device a mismatch is a stronger resetprop signal.
+        if (!trustedLocked) {
+            if ((Build.TAGS ?: "").isNotBlank() && propTags.isNotBlank() && Build.TAGS != propTags) {
+                suspicious += "Build.TAGS differs from ro.build.tags"
+            }
+            if ((Build.TYPE ?: "").isNotBlank() && propType.isNotBlank() && Build.TYPE != propType) {
+                suspicious += "Build.TYPE differs from ro.build.type"
+            }
+        }
+        crossPartitionFingerprintMismatch(propFingerprint, systemFingerprint, trustedLocked)?.let { suspicious += it }
+
+        return listOf(
+            det(
+                "build_field_coherence",
+                "Build Field Coherence",
+                CheckCategory.SYSTEM_PROPS,
+                Severity.HIGH,
+                "Checks whether runtime Build fields still match the live system props exposed by getprop",
+                suspicious.isNotEmpty(),
+                suspicious.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkHideBypassModules(): List<CheckResult> {
+        val detected = linkedSetOf<String>()
+        val keywords = hideBypassKeywords
+        val scanFiles = moduleScanFiles + listOf("action.sh", "system.prop")
+
+        try {
+            moduleDirs.forEach { dirPath ->
+                File(dirPath).listFiles()?.forEach { module ->
+                    val name = module.name.lowercase()
+                    val normalizedName = name.replace(Regex("[^a-z0-9]"), "")
+                    val nameHit = keywords.any { key ->
+                        val normalizedKey = key.replace(Regex("[^a-z0-9]"), "")
+                        name.contains(key) || normalizedName.contains(normalizedKey)
+                    }
+                    if (nameHit) {
+                        detected += "${module.name} @ $dirPath"
+                        return@forEach
+                    }
+                    val fileHit = scanFiles.any { fileName ->
+                        val file = File(module, fileName)
+                        file.exists() && runCatching { file.readText().lowercase() }.getOrDefault("").let { content ->
+                            keywords.any { key -> content.contains(key) }
+                        }
+                    }
+                    if (fileHit) {
+                        detected += "${module.name} @ $dirPath"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        return listOf(
+            det(
+                "hide_bypass_modules",
+                "Hide / Integrity Bypass Modules",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Finds hiding and integrity bypass modules such as Shamiko, TrickyStore, PlayIntegrityFix, HideMyAppList and SUSFS",
+                detected.isNotEmpty(),
+                detected.take(8).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkHardcodedFrameworkSweep(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val trustedLocked = bootLooksLockedAndNormal()
+        val keywords = frameworkSweepKeywords
+        val mountKeywords = setOf("magisk", "zygisk", "kernelsu", "ksu", "apatch", "shamiko", "trickystore", "playintegrityfix", "susfs")
+        val exactServiceMarkers = setOf("magiskd", "zygiskd", "lsposed", "riru", "tricky_store", "trickystore", "kernelsu", "ksud", "apatch")
+        val exactPropMarkers = setOf("magisk", "zygisk", "kernelsu", "ksu", "apatch", "shamiko", "trickystore", "playintegrityfix", "resetprop", "susfs")
+        val exactRuntimeMarkers = setOf("magisk", "magiskd", "zygisk", "zygiskd", "lsposed", "riru", "lspd", "kernelsu", "ksud", "apatch", "shamiko", "trickystore", "susfs", "resetprop")
+        val groupedSources = linkedSetOf<String>()
+        var criticalHits = 0
+        var mountHit = false
+
+        fun sourceGroup(source: String): String = when {
+            source.startsWith("maps") -> "maps"
+            source.startsWith("mount") -> "mounts"
+            else -> source
+        }
+
+        fun containsToken(text: String, token: String): Boolean {
+            return Regex("""(^|[^a-z0-9_])${Regex.escape(token)}([^a-z0-9_]|$)""").containsMatchIn(text)
+        }
+
+        fun collectHits(source: String, lines: Sequence<String>, limit: Int) {
+            lines.forEach { raw ->
+                val line = raw.trim()
+                val lower = line.lowercase()
+                val hits = keywords.filter { lower.contains(it) }
+                if (hits.isNotEmpty()) {
+                    val rootedMount = source.startsWith("mount") &&
+                        mountKeywords.any { containsToken(lower, it) } &&
+                        (lower.contains("/data/adb") || lower.contains("/debug_ramdisk") || lower.contains("/.magisk") || lower.contains("/sbin") || lower.contains("overlay"))
+                    val runtimeMarkerHit = exactRuntimeMarkers.any { containsToken(lower, it) }
+                    val exactPropLeak = source == "getprop" &&
+                        exactPropMarkers.any { containsToken(lower, it) } &&
+                        (line.contains("[") || line.contains("ro.") || line.contains("persist.") || line.contains("vendor."))
+                    val exactServiceLeak = source == "service" &&
+                        exactServiceMarkers.any {
+                            containsToken(lower, it)
+                        }
+                    val mappedLeak = source.startsWith("maps") &&
+                        runtimeMarkerHit &&
+                        (lower.contains("/data/adb") || lower.contains("/debug_ramdisk") || lower.contains("/sbin") || lower.contains("memfd:") || lower.contains("(deleted)"))
+                    val unixLeak = source == "unix" &&
+                        runtimeMarkerHit &&
+                        (lower.contains("@") || lower.contains("/dev/") || lower.contains("socket"))
+                    val confirmed = rootedMount || exactPropLeak || exactServiceLeak || mappedLeak || unixLeak
+                    if (confirmed) {
+                        evidence += "$source ${hits.take(3).joinToString(",")} -> ${line.take(140)}"
+                        groupedSources += sourceGroup(source)
+                        criticalHits++
+                        if (rootedMount) mountHit = true
+                    }
+                }
+                if (evidence.size >= limit) return
+            }
+        }
+
+        try {
+            collectHits("maps:self", File("/proc/self/maps").useLines { it.toList().asSequence() }, 6)
+        } catch (_: Exception) {}
+        try {
+            collectHits("maps:init", File("/proc/1/maps").useLines { it.toList().asSequence() }, 10)
+        } catch (_: Exception) {}
+        try {
+            collectHits("unix", File("/proc/net/unix").useLines { it.toList().asSequence() }, 14)
+        } catch (_: Exception) {}
+        try {
+            collectHits("mounts", File("/proc/mounts").useLines { it.toList().asSequence() }, 18)
+        } catch (_: Exception) {}
+        try {
+            collectHits("mountinfo", File("/proc/1/mountinfo").useLines { it.toList().asSequence() }, 22)
+        } catch (_: Exception) {}
+        try {
+            val output = Runtime.getRuntime().exec("getprop").inputStream.bufferedReader().readText()
+            collectHits("getprop", output.lineSequence(), 26)
+        } catch (_: Exception) {}
+        try {
+            val output = Runtime.getRuntime().exec("service list").inputStream.bufferedReader().readText()
+            collectHits("service", output.lineSequence(), 30)
+        } catch (_: Exception) {}
+
+        val detected = mountHit ||
+            (groupedSources.contains("maps") && groupedSources.contains("unix")) ||
+            (!trustedLocked && groupedSources.contains("maps") && criticalHits >= 2)
+
+        return listOf(
+            det(
+                "hardcoded_framework_sweep",
+                "Runtime Artifact Sweep",
+                CheckCategory.MAGISK,
+                Severity.HIGH,
+                "Cross-checks root framework traces across memory maps, sockets, mounts, services and properties",
+                detected,
+                evidence.take(10).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkLineageServices(): List<CheckResult> {
+        val detected = linkedSetOf<String>()
+        try {
+            val process = Runtime.getRuntime().exec("service list")
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            output.lineSequence().forEach { line ->
+                val lower = line.lowercase()
+                lineageServices.filter { svc ->
+                    lower.contains(svc.lowercase()) &&
+                    !lower.contains("pixel") &&
+                    !lower.contains("google")
+                }.forEach { _ ->
+                    detected += line.trim().take(160)
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(
+            det(
+                "lineage_services",
+                "LineageOS Services",
+                CheckCategory.CUSTOM_ROM,
+                Severity.WARNING,
+                "Scans binder service list for LineageOS hardware, health, livedisplay and touch services",
+                detected.isNotEmpty(),
+                detected.take(10).joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkLineagePermissions(): List<CheckResult> {
+        val detected = linkedSetOf<String>()
+        val pm = context.packageManager
+        lineagePermissions.forEach { permission ->
+            try {
+                pm.getPermissionInfo(permission, 0)
+                detected += permission
+            } catch (_: Exception) {}
+        }
+        return listOf(
+            det(
+                "lineage_permissions",
+                "LineageOS Platform Permissions",
+                CheckCategory.CUSTOM_ROM,
+                Severity.WARNING,
+                "Checks for LineageOS-specific platform permissions exposed by the framework",
+                detected.isNotEmpty(),
+                detected.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkLineageInitFiles(): List<CheckResult> {
+        val detected = linkedSetOf<String>()
+        lineageInitFiles.forEach { path ->
+            if (File(path).exists()) {
+                detected += path
+            }
+        }
+        return listOf(
+            det(
+                "lineage_files",
+                "LineageOS Init / Framework Files",
+                CheckCategory.CUSTOM_ROM,
+                Severity.WARNING,
+                "Checks for LineageOS init rc, platform xml and framework jar artifacts",
+                detected.isNotEmpty(),
+                detected.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkLineageSepolicy(): List<CheckResult> {
+        val detected = linkedSetOf<String>()
+        lineageSepolicyFiles.forEach { path ->
+            val file = File(path)
+            if (!file.exists() || !file.canRead()) return@forEach
+            val content = runCatching { file.readText() }.getOrDefault("")
+            val lower = content.lowercase()
+            val count = Regex("lineage").findAll(lower).count()
+            if (count > 0) {
+                detected += "$path contains 'lineage' $count times"
+            }
+        }
+        return listOf(
+            det(
+                "lineage_sepolicy",
+                "LineageOS Sepolicy Traces",
+                CheckCategory.CUSTOM_ROM,
+                Severity.WARNING,
+                "Scans readable sepolicy cil files for repeated lineage markers",
+                detected.isNotEmpty(),
+                detected.joinToString("\n").ifEmpty { null }
+            )
+        )
+    }
+
+    private fun checkCustomRom(): List<CheckResult> {
+        val indicators = linkedSetOf<String>()
+        var strongSignals = 0
+
+        customRomProps.forEach { (prop, rom) ->
+            val v = getProp(prop)
+            if (v.isNotEmpty()) {
+                indicators += "$rom ($v)"
+                strongSignals++
+            }
+        }
+
+        val buildFields = listOf(
+            "FINGERPRINT" to (android.os.Build.FINGERPRINT ?: ""),
+            "DISPLAY" to (android.os.Build.DISPLAY ?: ""),
+            "DESCRIPTION" to getProp("ro.build.description"),
+            "PRODUCT" to (android.os.Build.PRODUCT ?: ""),
+            "DEVICE" to (android.os.Build.DEVICE ?: ""),
+            "BRAND" to (android.os.Build.BRAND ?: ""),
+            "MANUFACTURER" to (android.os.Build.MANUFACTURER ?: "")
+        )
+        // Only distinctive ROM tokens. Common English words that also name real
+        // retail devices or appear in stock build descriptions ("spark", "bliss",
+        // "voltage", "rising", "ancient", "blaze", "elixir", "superior",
+        // "awaken", "cherish", "afterlife", "nameless", "matrixx", "paranoid")
+        // were removed — they produced false positives on stock hardware such as
+        // the Tecno Spark line.
+        val searchableKeywords = setOf(
+            "lineage",
+            "crdroid",
+            "evox",
+            "pixelos",
+            "yaap",
+            "pixel experience",
+            "pixelexperience",
+            "derpfest",
+            "aicp",
+            "projectelixir",
+            "alpha droid",
+            "alphadroid",
+            "syberia",
+            "pixys",
+            "phhgsi"
+        )
+
+        fun containsRomToken(text: String, keyword: String): Boolean {
+            val escaped = Regex.escape(keyword.lowercase()).replace("\\ ", "\\\\s+")
+            return Regex("(^|[^a-z0-9])$escaped([^a-z0-9]|$)", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        }
+
+        buildFields.forEach { (field, value) ->
+            val lower = value.lowercase()
+            customRomKeywords.forEach { (keyword, name) ->
+                if (keyword in searchableKeywords && containsRomToken(lower, keyword)) {
+                    indicators += "$name in $field"
+                }
+            }
+        }
+
+        runCatching {
+            val allProps = Runtime.getRuntime().exec("getprop").inputStream.bufferedReader().readText().lowercase()
+            customRomKeywords.forEach { (keyword, name) ->
+                if (keyword in searchableKeywords && containsRomToken(allProps, keyword)) {
+                    indicators += "$name in getprop"
+                }
+            }
+        }
+
+        customRomFiles.forEach { path ->
+            if (java.io.File(path).exists()) {
+                indicators += path
+                strongSignals++
+            }
+        }
+
+        val detected = strongSignals > 0 || indicators.size >= 2
+        return listOf(det(
+            "custom_rom", "Aftermarket ROM", CheckCategory.CUSTOM_ROM, Severity.WARNING,
+            "Looks for custom ROM props, framework files and stronger build identifiers from popular aftermarket ROMs",
+            detected, indicators.joinToString("\n").ifEmpty { null }
+        ))
+    }
+    private fun checkTmpfsOnData(): List<CheckResult> {
+        val found = linkedSetOf<String>()
+        try {
+            File("/proc/mounts").forEachLine { line ->
+                val parts = line.split(" ")
+                if (parts.size < 3) return@forEachLine
+                val device = parts[0]
+                val mountPoint = parts[1]
+                val fs = parts[2]
+                if (fs == "tmpfs" && (
+                    mountPoint.startsWith("/data/adb") ||
+                    mountPoint == "/debug_ramdisk" ||
+                    mountPoint.startsWith("/sbin")
+                )) {
+                    found += "$mountPoint [tmpfs from $device]"
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "tmpfs_data", "Suspicious tmpfs on Data Paths", CheckCategory.MOUNT_POINTS, Severity.HIGH,
+            "tmpfs mounted over /data/adb or /debug_ramdisk is a strong Magisk/KSU staging signal",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSuTimestamps(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        val recentThresholdMs = 30L * 24 * 60 * 60 * 1000
+        val now = System.currentTimeMillis()
+        val highConfidencePaths = listOf("/data/adb/magisk", "/data/adb/ksu", "/data/adb/ap", "/data/adb/modules")
+        val lowConfidencePaths = listOf("/debug_ramdisk")
+        val allPaths = highConfidencePaths + lowConfidencePaths
+        var highHit = false
+        allPaths.forEach { path ->
+            val f = java.io.File(path)
+            if (f.exists()) {
+                val age = now - f.lastModified()
+                if (age < recentThresholdMs && f.lastModified() > 0) {
+                    suspicious += "$path (modified ${age / 86400000}d ago)"
+                    if (path in highConfidencePaths) highHit = true
+                }
+            }
+        }
+        return listOf(det(
+            "su_timestamps", "Recent Root Artifact Timestamps", CheckCategory.MAGISK,
+            if (highHit) Severity.HIGH else Severity.WARNING,
+            "Root artifacts modified within the last 30 days indicate active root installation",
+            suspicious.isNotEmpty(), suspicious.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkLdPreload(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val ldPreload = System.getenv("LD_PRELOAD").orEmpty()
+        val ldLibPath = System.getenv("LD_LIBRARY_PATH").orEmpty()
+        val javaToolOpts = System.getenv("JAVA_TOOL_OPTIONS").orEmpty()
+        if (ldPreload.isNotEmpty()) {
+            val lower = ldPreload.lowercase()
+            if (frameworkKeywords().any { lower.contains(it) } ||
+                lower.contains("/data/") || lower.contains("frida") ||
+                lower.contains("inject") || lower.contains("hook"))
+                evidence += "LD_PRELOAD=$ldPreload"
+        }
+        if (ldLibPath.isNotEmpty()) {
+            val lower = ldLibPath.lowercase()
+            if (frameworkKeywords().any { lower.contains(it) } ||
+                lower.contains("/data/adb") || lower.contains("/debug_ramdisk"))
+                evidence += "LD_LIBRARY_PATH=$ldLibPath"
+        }
+        if (javaToolOpts.isNotEmpty()) evidence += "JAVA_TOOL_OPTIONS=$javaToolOpts"
+        try {
+            val environ = File("/proc/self/environ").readBytes()
+            environ.toString(Charsets.ISO_8859_1).split("\u0000").forEach { entry ->
+                val lower = entry.lowercase()
+                if ((entry.startsWith("LD_PRELOAD=") || entry.startsWith("LD_LIBRARY_PATH=")) &&
+                    entry.length > "LD_PRELOAD=".length &&
+                    (frameworkKeywords().any { lower.contains(it) } || lower.contains("/data/"))) {
+                    evidence += entry.take(120)
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "ld_preload", "LD_PRELOAD / Linker Injection",
+            CheckCategory.MAGISK, Severity.HIGH,
+            "Detects injected native libraries via LD_PRELOAD, LD_LIBRARY_PATH or JAVA_TOOL_OPTIONS in the process environment",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSeccompMode(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        try {
+            val statusLine = File("/proc/self/status").useLines { lines ->
+                lines.firstOrNull { it.startsWith("Seccomp") }
+            } ?: return emptyList()
+            val mode = statusLine.substringAfter(":").trim().toIntOrNull() ?: return emptyList()
+            if (mode == 0) {
+                evidence += "Seccomp=$mode — syscall filter disabled (patched kernel or root bypass active)"
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "seccomp_mode", "Seccomp Filter Disabled",
+            CheckCategory.SYSTEM_PROPS, Severity.HIGH,
+            "Modern Android enforces Seccomp BPF (mode 2). Mode 0 indicates a patched or hook-bypassed kernel.",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkTracerPid(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        try {
+            val statusLine = File("/proc/self/status").useLines { lines ->
+                lines.firstOrNull { it.startsWith("TracerPid") }
+            } ?: return emptyList()
+            val pid = statusLine.substringAfter(":").trim().toIntOrNull() ?: return emptyList()
+            if (pid > 0) {
+                val comm = runCatching { File("/proc/$pid/comm").readText().trim() }.getOrDefault("unknown")
+                val cmdline = runCatching {
+                    File("/proc/$pid/cmdline").readText().replace('\u0000', ' ').trim().take(80)
+                }.getOrDefault("unknown")
+                evidence += "TracerPid=$pid comm=$comm cmdline=$cmdline"
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "tracer_pid", "Process Tracer (ptrace Attach)",
+            CheckCategory.FRIDA, Severity.HIGH,
+            "TracerPid > 0 in /proc/self/status means the process is being traced by a debugger or Frida",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSUSFS(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val susfsNodes = listOf(
+            "/sys/module/susfs", "/sys/kernel/susfs",
+            "/proc/susfs", "/dev/susfs", "/sys/fs/susfs"
+        )
+        susfsNodes.filter { File(it).exists() }.forEach { evidence += "$it exists" }
+        try {
+            File("/proc/self/maps").forEachLine { line ->
+                if (line.contains("susfs", ignoreCase = true) ||
+                    line.contains("[sus_", ignoreCase = true) ||
+                    line.contains("ksu_susfs", ignoreCase = true)) {
+                    evidence += "maps: ${line.trim().take(100)}"
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            File("/proc/kallsyms").useLines { lines ->
+                lines.take(100_000).forEach { line ->
+                    if (line.contains("susfs", ignoreCase = true) ||
+                        line.contains("sus_path", ignoreCase = true) ||
+                        line.contains("ksu_susfs", ignoreCase = true)) {
+                        evidence += "kallsyms: ${line.trim().take(60)}"
+                        return@useLines
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "susfs", "SUSFS File Hide Module",
+            CheckCategory.MAGISK, Severity.HIGH,
+            "Detects the SUSFS kernel module used to hide root files and processes from integrity checks",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSOTER(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val bypassPaths = listOf(
+            "/data/adb/modules/soterbypass", "/data/adb/modules/SoterBypass",
+            "/data/adb/modules/soter_bypass", "/data/adb/modules/SOTERBypass"
+        )
+        bypassPaths.filter { File(it).exists() }.forEach { evidence += "bypass module: $it" }
+        val soterVersion = getProp("ro.tee.soter.version")
+        val soterUid = getProp("ro.tee.soter.uid")
+        if (soterVersion.isNotEmpty()) {
+            val soterSockets = collectNetUnixMatches(listOf("soter_service", "soterservice"))
+            if (soterSockets.isEmpty()) {
+                evidence += "ro.tee.soter.version=$soterVersion uid=$soterUid but soter_service socket absent — bypass or hook"
+            }
+            try {
+                val sm = Class.forName("android.os.ServiceManager")
+                val getService = sm.getDeclaredMethod("getService", String::class.java)
+                getService.isAccessible = true
+                val binder = getService.invoke(null, "soter_service")
+                if (binder == null) {
+                    evidence += "soter_service binder null despite ro.tee.soter.version=$soterVersion"
+                }
+            } catch (_: Exception) {}
+        }
+        try {
+            Class.forName("com.tencent.soter.core.sotercore.SoterCoreBeforeTreble")
+            if (collectNetUnixMatches(listOf("soter")).isEmpty()) {
+                evidence += "SOTER core class loadable but no active SOTER socket — possible hook"
+            }
+        } catch (_: ClassNotFoundException) {}
+        return listOf(det(
+            "soter_check", "SOTER TEE Attestation",
+            CheckCategory.SYSTEM_PROPS, Severity.HIGH,
+            "Checks SOTER TEE props, service binder availability, socket presence and bypass Magisk modules",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkXposedFramework(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val xposedClasses = listOf(
+            "de.robv.android.xposed.XposedBridge",
+            "de.robv.android.xposed.XposedHelpers",
+            "de.robv.android.xposed.XC_MethodHook",
+            "io.github.lsposed.lspd.nativebridge.ShadowClassLoader",
+            "org.lsposed.lspd.nativebridge.ShadowClassLoader",
+            "me.weishu.epic.art.EpicNative"
+        )
+        xposedClasses.forEach { cls ->
+            try {
+                Class.forName(cls)
+                evidence += "class present: $cls"
+            } catch (_: ClassNotFoundException) {
+            } catch (_: Exception) {}
+        }
+        try {
+            throw Exception("stack_probe")
+        } catch (e: Exception) {
+            e.stackTrace.forEach { frame ->
+                val cls = frame.className
+                if (cls.contains("xposed", ignoreCase = true) ||
+                    cls.contains("lspd", ignoreCase = true) ||
+                    cls.contains("edxposed", ignoreCase = true)) {
+                    evidence += "stack: $frame"
+                }
+            }
+        }
+        val xposedFiles = listOf(
+            "/system/xposed.prop",
+            "/system/framework/XposedBridge.jar",
+            "/system/lib/libxposed_art.so",
+            "/system/lib64/libxposed_art.so"
+        )
+        xposedFiles.filter { File(it).exists() }.forEach { evidence += "file: $it" }
+        return listOf(det(
+            "xposed_framework", "Xposed / LSPosed Framework",
+            CheckCategory.MAGISK, Severity.HIGH,
+            "Detects Xposed, EdXposed and LSPosed via class loading, stack trace inspection and filesystem artifacts",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkADBNetwork(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val tcpPort = getProp("service.adb.tcp.port")
+        val persistPort = getProp("persist.adb.tcp.port")
+        if (tcpPort.isNotEmpty() && tcpPort != "-1" && tcpPort != "0")
+            evidence += "service.adb.tcp.port=$tcpPort"
+        if (persistPort.isNotEmpty() && persistPort != "-1" && persistPort != "0")
+            evidence += "persist.adb.tcp.port=$persistPort"
+        listOf("/proc/net/tcp", "/proc/net/tcp6").forEach { netFile ->
+            try {
+                File(netFile).forEachLine { line ->
+                    val fields = line.trim().split(Regex("\\s+"))
+                    if (fields.size < 4 || fields[0] == "sl") return@forEachLine
+                    val port = fields[1].substringAfter(":").toIntOrNull(16) ?: return@forEachLine
+                    if (port == 5555 && fields[3] == "0A")
+                        evidence += "$netFile: ADB port 5555 listening"
+                }
+            } catch (_: Exception) {}
+        }
+        return listOf(det(
+            "adb_network", "ADB Network / TCP Debugging",
+            CheckCategory.SYSTEM_PROPS, Severity.HIGH,
+            "ADB over TCP (port 5555) enables full shell access wirelessly — strong tamper indicator on production devices",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkDeveloperOptions(): List<CheckResult> {
+        val tamperSignals = linkedSetOf<String>()
+        val prerequisites = linkedSetOf<String>()
+        try {
+            val cr = context.contentResolver
+            if (Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1)
+                prerequisites += "developer options enabled"
+            if (Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1)
+                prerequisites += "USB debugging (ADB) enabled"
+            if (Settings.Global.getInt(cr, "oem_unlock_allowed_by_user", -1) == 1)
+                tamperSignals += "OEM unlock allowed by user"
+            if (Settings.Global.getInt(cr, "mock_location", -1) == 1)
+                tamperSignals += "mock location enabled"
+        } catch (_: Exception) {}
+        // Developer mode and USB debugging are near-universal among developers and
+        // power users and are not tampering by themselves, so they are reported as
+        // context only. Detection fires on the tamper-relevant toggles (OEM unlock,
+        // mock location).
+        val evidence = tamperSignals + prerequisites
+        return listOf(det(
+            "developer_options", "Developer Options / USB Debugging",
+            CheckCategory.SYSTEM_PROPS, Severity.WARNING,
+            "OEM unlock and mock location are tamper-relevant and trigger detection. Plain developer mode and USB debugging are shown as context but do not count as a detection.",
+            tamperSignals.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSuDirectory(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val suDirs = listOf(
+            "/su", "/su/bin", "/su/lib", "/su/xbin", "/su/etc",
+            "/su/etc/init.d", "/su/su.d", "/su/0", "/su/1000",
+            "/system/su.d", "/data/adb/su"
+        )
+        suDirs.forEach { path ->
+            val f = File(path)
+            if (f.exists() && f.isDirectory) {
+                evidence += "dir: $path"
+            }
+        }
+        var hasPropEvidence = false
+        listOf(
+            "ro.su.granted_count", "ro.su.secured_by",
+            "ro.su.active_count", "ro.su.request_timeout"
+        ).forEach { prop ->
+            val v = getProp(prop)
+            if (v.isNotEmpty()) {
+                evidence += "$prop=$v"
+                hasPropEvidence = true
+            }
+        }
+        return listOf(det(
+            "su_directory", "SU Directory Structure",
+            CheckCategory.SU_BINARIES,
+            if (hasPropEvidence) Severity.HIGH else Severity.WARNING,
+            "Checks the /su directory hierarchy created by SuperSU and legacy root methods, and reads SuperSU system props",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkExternalStorageArtifacts(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val paths = listOf(
+            "/sdcard/TWRP", "/sdcard/twrp",
+            "/sdcard/SuperSU", "/sdcard/supersu",
+            "/sdcard/Magisk", "/sdcard/.Magisk",
+            "/sdcard/Download/Magisk.apk", "/sdcard/Download/magisk.apk",
+            "/sdcard/Download/Magisk.zip",
+            "/sdcard/Download/KernelSU.apk", "/sdcard/Download/kernelsu.apk",
+            "/sdcard/Download/APatch.apk",
+            "/sdcard/TWRP/TWRP.app",
+            "/external_sd/TWRP",
+            "/storage/emulated/0/TWRP",
+            "/storage/emulated/0/SuperSU",
+            "/storage/emulated/0/.Magisk"
+        )
+        paths.forEach { path ->
+            if (File(path).exists()) evidence += path
+        }
+        return listOf(det(
+            "sdcard_artifacts", "Root Tool Artifacts on External Storage",
+            CheckCategory.MAGISK, Severity.WARNING,
+            "TWRP, SuperSU, Magisk, KernelSU and APatch files on external storage — common residues of sideloaded root",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkRecoveryArtifacts(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val paths = listOf(
+            "/cache/recovery", "/cache/recovery/last_install",
+            "/cache/recovery/last_log", "/cache/recovery/command",
+            "/cache/magisk.log", "/cache/magisk_install_log",
+            "/tmp/recovery.log", "/tmp/magisk.log",
+            "/data/recovery", "/data/system/recovery"
+        )
+        paths.forEach { path ->
+            if (File(path).exists()) evidence += path
+        }
+        return listOf(det(
+            "recovery_artifacts", "Custom Recovery Artifacts",
+            CheckCategory.MAGISK, Severity.WARNING,
+            "Leftover files from TWRP, OrangeFox and other custom recoveries used for flashing root",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkInitDotD(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val initDirs = listOf(
+            "/etc/init.d", "/system/etc/init.d",
+            "/system/su.d", "/su/su.d", "/su/etc/init.d"
+        )
+        initDirs.forEach { dir ->
+            val f = File(dir)
+            if (f.exists() && f.isDirectory) {
+                evidence += "dir exists: $dir"
+                runCatching {
+                    f.listFiles()?.take(5)?.forEach { child ->
+                        evidence += "  script: ${child.name}"
+                    }
+                }
+            }
+        }
+        return listOf(det(
+            "init_dotd", "init.d / su.d Boot Scripts",
+            CheckCategory.MAGISK, Severity.WARNING,
+            "/etc/init.d and /system/su.d directories are used by SuperSU and custom root setups to persist scripts across reboots",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkDataLocalTmp(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val tmpDirs = listOf("/data/local/tmp", "/data/local/bin")
+        val suspiciousNames = listOf(
+            "su", "magisk", "frida", "gdb", "strace",
+            "busybox", "ksud", "apd", "resetprop"
+        )
+        tmpDirs.forEach { dir ->
+            val f = File(dir)
+            runCatching {
+                val st = java.nio.file.Files.getPosixFilePermissions(f.toPath())
+                if (st.size == 9) evidence += "$dir is world-writable (777)"
+            }
+            runCatching {
+                f.listFiles()?.forEach { child ->
+                    val name = child.name.lowercase()
+                    if (suspiciousNames.any { name.contains(it) })
+                        evidence += "suspicious file: ${child.absolutePath}"
+                    if (child.canExecute())
+                        evidence += "executable in tmp: ${child.absolutePath}"
+                }
+            }
+        }
+        return listOf(det(
+            "data_local_tmp", "Suspicious Files in /data/local/tmp",
+            CheckCategory.SU_BINARIES, Severity.HIGH,
+            "Executable or root-named files in world-writable temp dirs — common staging ground for root tools and exploits",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+
+    private fun checkKsuTempRootIntent(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        val tmpBase = "/data/local/tmp"
+        // KernelSU temp root artifacts — these files are staged during
+        // active root deployment and are never present on stock devices.
+        // The directory is 0771 shell:shell so normal apps cannot listFiles(),
+        // but world-execute allows stat() on known paths directly.
+        val knownFiles = listOf(
+            "ksud", "ksud-aarch64-linux-android",
+            "ksu-helper", "ksu-payload",
+            "temp_su", "temp_su.sock"
+        )
+        // 1. Direct existence probe (works without dir read permission)
+        knownFiles.forEach { name ->
+            val f = File(tmpBase, name)
+            if (f.exists()) evidence += f.absolutePath
+        }
+        // 2. Broader scan if directory read is possible (e.g. debuggable builds,
+        // or app running with shell group)
+        val prefixMarkers = listOf("ksud", "temp_su", "ksu-helper", "ksu-payload")
+        runCatching {
+            File(tmpBase).listFiles()?.forEach { child ->
+                val name = child.name.lowercase()
+                if (prefixMarkers.any { name.startsWith(it) }) {
+                    evidence += child.absolutePath
+                }
+            }
+        }
+        // 3. Scan /proc/net/unix for KSU sockets (always readable, bypasses dir perms)
+        val socketMarkers = listOf("temp_su", "ksud", "ksu-helper")
+        runCatching {
+            File("/proc/net/unix").forEachLine { line ->
+                val lower = line.lowercase()
+                if (socketMarkers.any { lower.contains(it) }) {
+                    evidence += "unix_socket: ${line.trim().takeLast(120)}"
+                }
+            }
+        }
+        return listOf(det(
+            "ksu_temp_root_intent",
+            "KernelSU Temp Root Intent",
+            CheckCategory.SU_BINARIES,
+            Severity.HIGH,
+            "KernelSU staging artifacts (ksud, temp_su, ksu-helper, ksu-payload) found in /data/local/tmp — active root deployment in progress",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkResetpropModifications(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+
+        val propFiles = listOf(
+            "/system/build.prop", "/system/system/build.prop",
+            "/vendor/build.prop", "/product/build.prop",
+            "/odm/build.prop", "/system_ext/build.prop",
+            "/my_product/build.prop", "/my_company/build.prop",
+            "/vendor/default.prop", "/default.prop"
+        )
+
+        val fileProps = linkedMapOf<String, String>()
+        propFiles.forEach { filePath ->
+            runCatching {
+                File(filePath).forEachLine { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEachLine
+                    val eqIdx = trimmed.indexOf('=')
+                    if (eqIdx < 1) return@forEachLine
+                    val key = trimmed.substring(0, eqIdx)
+                    val value = trimmed.substring(eqIdx + 1)
+                    if (key.startsWith("ro.") && !fileProps.containsKey(key))
+                        fileProps[key] = value
+                }
+            }
+        }
+
+        val securityPropChecks = listOf(
+            Triple("ro.debuggable", "0", "1"),
+            Triple("ro.secure", "1", "0"),
+            Triple("ro.build.type", "user", null)
+        )
+        fileProps.forEach { (key, fileValue) ->
+            if (securityPropChecks.none { it.first == key }) return@forEach
+            val liveValue = getProp(key)
+            if (liveValue.isEmpty() || liveValue == fileValue) return@forEach
+            val suspicious = when (key) {
+                "ro.debuggable" -> fileValue == "0" && liveValue == "1"
+                "ro.secure"     -> fileValue == "1" && liveValue == "0"
+                "ro.build.type" -> fileValue == "user" && liveValue != "user"
+                else -> false
+            }
+            if (suspicious)
+                evidence += "security prop tampered: $key live=[$liveValue] file=[$fileValue]"
+        }
+
+        listOf(
+            "/data/adb/modules/playintegrityfix/custom.pif.json",
+            "/data/adb/modules/playintegrityfix/pif.json",
+            "/data/adb/modules/playintegrityfix/migrate.pif.json",
+            "/data/adb/pif.json",
+            "/data/adb/tricky_store/keybox.xml",
+            "/data/adb/modules/tricky_store/keybox.xml",
+            "/data/adb/modules/TrickyStore/keybox.xml"
+        ).forEach { path ->
+            if (File(path).exists()) evidence += "spoof config present: $path"
+        }
+
+        return listOf(det(
+            "resetprop_modifications",
+            "Modified Properties via resetprop",
+            CheckCategory.SYSTEM_PROPS,
+            Severity.HIGH,
+            "Scans every ro.* key from all partition prop files and compares against the live in-memory property system — any mismatch proves resetprop was used. Also checks prop-serial counters, cross-prop pairs and PIF/TrickyStore spoof configs.",
+            evidence.isNotEmpty(),
+            evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkApkInstallSource(): List<CheckResult> {
+        val suspicious = linkedSetOf<String>()
+        try {
+            val pm = context.packageManager
+            val myPackage = context.packageName
+            val installer = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                pm.getInstallSourceInfo(myPackage).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getInstallerPackageName(myPackage)
+            }
+            val knownStores = setOf(
+                "com.android.vending", "com.google.android.packageinstaller",
+                "com.samsung.android.packageinstaller", "com.miui.packageinstaller",
+                "com.huawei.appmarket", "com.xiaomi.market"
+            )
+            if (installer == null) {
+                suspicious += "APK installed via ADB or unknown source (no installer recorded)"
+            } else if (installer !in knownStores) {
+                suspicious += "Installed by: $installer (not a known app store)"
+            }
+        } catch (_: Exception) {}
+        return listOf(det(
+            "install_source", "APK Install Source", CheckCategory.BUILD_TAGS, Severity.WARNING,
+            "Apps installed via ADB or sideloading may indicate a developer or testing environment",
+            suspicious.isNotEmpty(), suspicious.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSceneDebugfsMount(): List<CheckResult> {
+        // Scene 9.3.0 (com.omarea.vtools) mounts a private debugfs at
+        // /dev/<hash>/debug and drops a marker file /dev/<hash>/scene_mode_category.
+        // The hash directory is 8 lowercase letters (or "_" + 7). The mount is
+        // kernel-visible in /proc/self/mountinfo, so it cannot be hidden from the
+        // app without also hiding it from the kernel mount table.
+        val hashRegex = Regex("^/([a-z]{8}|_[a-z]{7})/debug$")
+        val hashes = linkedSetOf<String>()
+        runCatching {
+            File("/proc/self/mountinfo").useLines { lines ->
+                lines.forEach { line ->
+                    val fields = line.split(" ")
+                    val sep = fields.indexOf("-")
+                    if (sep == -1 || fields.size < 5) return@forEach
+                    if (fields.getOrNull(sep + 1) == "debugfs") {
+                        val mountPoint = fields[4].removePrefix("/dev")
+                        hashRegex.matchEntire(mountPoint)?.groupValues?.getOrNull(1)?.let { hashes += it }
+                    }
+                }
+            }
+        }
+        runCatching {
+            File("/proc/self/mounts").useLines { lines ->
+                lines.forEach { line ->
+                    val parts = line.split(" ")
+                    if (parts.size >= 3 && parts[2] == "debugfs") {
+                        val mountPoint = parts[1].removePrefix("/dev")
+                        hashRegex.matchEntire(mountPoint)?.groupValues?.getOrNull(1)?.let { hashes += it }
+                    }
+                }
+            }
+        }
+        val evidence = linkedSetOf<String>()
+        hashes.forEach { hash ->
+            val marker = File("/dev/$hash/scene_mode_category")
+            if (marker.exists()) evidence += marker.path
+        }
+        return listOf(det(
+            "scene_debugfs", "Scene Dynamic debugfs Mount", CheckCategory.ROOT_APPS, Severity.HIGH,
+            "Scene 9.3.0 mounts a debugfs under /dev/<hash>/debug and drops a scene_mode_category marker. Requires both the debugfs mount and the marker file so unrelated debugfs mounts are ignored.",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkNeoZygiskEnv(): List<CheckResult> {
+        val evidence = linkedSetOf<String>()
+        fun isZygiskTmp(value: String): Boolean {
+            val lower = value.lowercase()
+            return lower.contains("/data/adb") && lower.contains("zygisk")
+        }
+        System.getenv("TMP_PATH")?.let { if (isZygiskTmp(it)) evidence += "TMP_PATH=$it" }
+        runCatching {
+            File("/proc/self/environ").readBytes().toString(Charsets.ISO_8859_1)
+                .split('\u0000').forEach { entry ->
+                    if (entry.startsWith("TMP_PATH=") && isZygiskTmp(entry)) evidence += entry.take(120)
+                }
+        }
+        return listOf(det(
+            "neozygisk_env", "NeoZygisk Environment Marker", CheckCategory.MAGISK, Severity.HIGH,
+            "NeoZygisk leaks its working directory into the TMP_PATH environment variable (points into /data/adb/…zygisk). The variable is inherited by injected app processes and requires /data/adb + zygisk to match.",
+            evidence.isNotEmpty(), evidence.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSKRoot(): List<CheckResult> {
+        val pm = context.packageManager
+        val found = linkedSetOf<String>()
+        val pkg = "com.linux.permissionmanager"
+        when {
+            isPackageInstalled(pm, pkg) -> found += "$pkg (SKRoot)"
+            pm.getLaunchIntentForPackage(pkg) != null -> found += "$pkg (SKRoot, launchable)"
+        }
+        return listOf(det(
+            "skroot", "SKRoot Kernel Root Manager", CheckCategory.ROOT_APPS, Severity.HIGH,
+            "Detects the SKRoot kernel-level root manager package com.linux.permissionmanager",
+            found.isNotEmpty(), found.joinToString("\n").ifEmpty { null }
+        ))
+    }
+
+    private fun checkSelinuxSeqnoOracle(): List<CheckResult> {
+        // Reads the kernel-owned SELinux status page (/sys/fs/selinux/status) and
+        // cross-checks its policyload counter against the seqno the kernel used for
+        // a live access decision (/sys/fs/selinux/access). A root framework that
+        // hot-reloads a modified policy (dirty sepolicy) bumps the policyload
+        // counter out of step with the access seqno. The status page is kernel
+        // memory and cannot be spoofed from userspace without patching the kernel.
+        // Only a confirmed seqno split counts as a detection; when the access
+        // oracle is not reachable from the app domain the result is informational.
+        fun le32(bytes: ByteArray, off: Int): Long =
+            (bytes[off].toLong() and 0xff) or
+                ((bytes[off + 1].toLong() and 0xff) shl 8) or
+                ((bytes[off + 2].toLong() and 0xff) shl 16) or
+                ((bytes[off + 3].toLong() and 0xff) shl 24)
+
+        val status = runCatching {
+            val buffer = ByteArray(20)
+            val count = java.io.FileInputStream("/sys/fs/selinux/status").use { it.read(buffer) }
+            if (count < 20) null else buffer
+        }.getOrNull()
+
+        if (status == null) {
+            return listOf(det(
+                "selinux_seqno", "SELinux Policyload Seqno Oracle", CheckCategory.SYSTEM_PROPS, Severity.WARNING,
+                "Cross-checks the kernel SELinux status page policyload counter against the live access-decision seqno; a split indicates a runtime policy reload (dirty sepolicy).",
+                false, null
+            ))
+        }
+
+        val sequence = le32(status, 4)
+        val policyload = le32(status, 12)
+
+        // Odd sequence means the kernel is mid-update and the page is unstable.
+        val accessSeqno = if (sequence % 2L == 0L) runCatching {
+            val processClass = java.io.FileInputStream("/sys/fs/selinux/class/process/index")
+                .use { it.bufferedReader().readText().trim().toInt() }
+            java.io.RandomAccessFile("/sys/fs/selinux/access", "rw").use { file ->
+                file.write("u:r:untrusted_app:s0 u:r:untrusted_app:s0 $processClass".toByteArray(Charsets.US_ASCII))
+                file.seek(0)
+                val response = ByteArray(256)
+                val n = file.read(response)
+                if (n <= 0) null
+                else String(response, 0, n, Charsets.US_ASCII).trim()
+                    .split(Regex("\\s+")).getOrNull(4)?.toLongOrNull()
+            }
+        }.getOrNull() else null
+
+        val suspicious = accessSeqno != null && policyload > 0L && accessSeqno > 0L && policyload != accessSeqno
+        val detail = buildString {
+            append("status.sequence=$sequence status.policyload=$policyload")
+            append(if (accessSeqno != null) " access.seqno=$accessSeqno" else " access.seqno=<unavailable from app domain>")
+        }
+        return listOf(det(
+            "selinux_seqno", "SELinux Policyload Seqno Oracle", CheckCategory.SYSTEM_PROPS,
+            if (suspicious) Severity.HIGH else Severity.WARNING,
+            "Cross-checks the kernel SELinux status page policyload counter against the live access-decision seqno. A split means a policy was hot-reloaded at runtime (dirty sepolicy). Only a confirmed split counts as a detection.",
+            suspicious, if (suspicious) detail else null
+        ))
+    }
+
+}

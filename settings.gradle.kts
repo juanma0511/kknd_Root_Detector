@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "RootDetector"
 include(":app")
+include(":rootdetector")
