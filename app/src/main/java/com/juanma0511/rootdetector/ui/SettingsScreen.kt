@@ -50,6 +50,14 @@ private val CONTRIBUTORS = listOf(
         profileUrl = "https://github.com/juanma0511"
     ),
     Contributor(
+        login = "yasinowo",
+        displayName = "yasinowo",
+        role = "Contributor",
+        bio = "Added reusable AAR library API and structured scan results",
+        avatarUrl = "https://github.com/yasinowo.png",
+        profileUrl = "https://github.com/yasinowo"
+    ),
+    Contributor(
         login = "OukaroMF",
         displayName = "OukaroMF",
         role = "Artist",
