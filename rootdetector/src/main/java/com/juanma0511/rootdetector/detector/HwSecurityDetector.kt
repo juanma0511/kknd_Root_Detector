@@ -16,7 +16,7 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import javax.security.auth.x500.X500Principal
 
-class HwSecurityDetector(private val context: Context) {
+internal class HwSecurityDetector(private val context: Context) {
 
     fun runAllChecks(progressCallback: (Int) -> Unit = {}): List<HwCheckItem> {
         val checks = mutableListOf<() -> HwCheckItem>(
