@@ -453,7 +453,8 @@ fun CheckResultCard(item: CheckResult) {
                     HorizontalDivider(color = accentContent.copy(alpha = if (isDark) 0.16f else 0.2f))
                     Spacer(Modifier.height(10.dp))
 
-                    if (item.detail != null) {
+                    val detail = item.detail
+                    if (detail != null) {
                         Text(
                             "Detail",
                             style = MaterialTheme.typography.labelMedium,
@@ -462,7 +463,7 @@ fun CheckResultCard(item: CheckResult) {
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            item.detail,
+                            detail,
                             style = MaterialTheme.typography.bodySmall,
                             color = accentContent,
                             fontFamily = FontFamily.Monospace
