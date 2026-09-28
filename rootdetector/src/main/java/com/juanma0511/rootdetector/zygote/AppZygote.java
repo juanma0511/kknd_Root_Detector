@@ -31,7 +31,7 @@ import java.util.LinkedHashSet;
  * </ul>
  */
 @TargetApi(29)
-public final class AppZygote implements ZygotePreload {
+public class AppZygote implements ZygotePreload {
 
     private static final String TAG = "RootDetector-AppZygote";
 

@@ -6,3 +6,7 @@
 -keep class com.juanma0511.rootdetector.zygote.AppZygote { *; }
 -keep class com.juanma0511.rootdetector.zygote.DirtySepolicyService { *; }
 -keep interface com.juanma0511.rootdetector.zygote.IDirtySepolicyService { *; }
+
+# Keep an optional build-generated App Zygote entry point and its exact class
+# name because android:zygotePreloadName loads it reflectively from the manifest.
+-keep public class * extends com.juanma0511.rootdetector.zygote.AppZygote { *; }
