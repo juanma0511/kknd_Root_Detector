@@ -7,7 +7,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
-import com.juanma0511.rootdetector.model.CheckStatus
+import com.juanma0511.rootdetector.model.HwCheckStatus
 import com.juanma0511.rootdetector.model.HwCheckItem
 import com.juanma0511.rootdetector.model.HwGroup
 import java.io.BufferedReader
@@ -110,12 +110,12 @@ class KeyAttestationChecker(private val context: Context) {
         val compromisedBoot = isBootStateCompromised()
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            return det(id, "Key Attestation ($label)", HwGroup.KEYSTORE, CheckStatus.WARN,
+            return det(id, "Key Attestation ($label)", HwGroup.KEYSTORE, HwCheckStatus.WARN,
                 "Key attestation requires Android 7.0+", "Android < 7.0")
         }
 
         if (strongBox && !hasStrongBoxFeature()) {
-            return det(id, "Key Attestation ($label)", HwGroup.KEYSTORE, CheckStatus.UNKNOWN,
+            return det(id, "Key Attestation ($label)", HwGroup.KEYSTORE, HwCheckStatus.UNKNOWN,
                 "StrongBox attestation is optional and only available on supported hardware",
                 "This device does not advertise a dedicated StrongBox-backed keystore")
         }
@@ -124,7 +124,7 @@ class KeyAttestationChecker(private val context: Context) {
         val generated = attempt.generated
         if (generated == null) {
             val detail = buildFailureDetail(attempt.errors)
-            val status = if (strongBox && !hasStrongBoxFeature()) CheckStatus.UNKNOWN else fallbackStatus(compromisedBoot)
+            val status = if (strongBox && !hasStrongBoxFeature()) HwCheckStatus.UNKNOWN else fallbackStatus(compromisedBoot)
             return det(id, "Key Attestation ($label)", HwGroup.KEYSTORE, status,
                 "Could not complete the key attestation check", detail)
         }
@@ -141,11 +141,11 @@ class KeyAttestationChecker(private val context: Context) {
         }
 
         val status = when {
-            strongBox && generated.securityLevel == SecurityLevel.STRONGBOX -> CheckStatus.PASS
-            strongBox -> CheckStatus.FAIL
-            generated.securityLevel == SecurityLevel.TEE || generated.securityLevel == SecurityLevel.STRONGBOX -> CheckStatus.PASS
-            generated.securityLevel == SecurityLevel.SOFTWARE && compromisedBoot -> CheckStatus.FAIL
-            else -> CheckStatus.WARN
+            strongBox && generated.securityLevel == SecurityLevel.STRONGBOX -> HwCheckStatus.PASS
+            strongBox -> HwCheckStatus.FAIL
+            generated.securityLevel == SecurityLevel.TEE || generated.securityLevel == SecurityLevel.STRONGBOX -> HwCheckStatus.PASS
+            generated.securityLevel == SecurityLevel.SOFTWARE && compromisedBoot -> HwCheckStatus.FAIL
+            else -> HwCheckStatus.WARN
         }
 
         val detail = buildString {
@@ -162,7 +162,7 @@ class KeyAttestationChecker(private val context: Context) {
 
     fun checkRootCertTrust(): HwCheckItem {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            return det("attest_root_trust", "Attestation Root Trust", HwGroup.KEYSTORE, CheckStatus.WARN,
+            return det("attest_root_trust", "Attestation Root Trust", HwGroup.KEYSTORE, HwCheckStatus.WARN,
                 "Requires Android 7.0+", null)
         }
 
@@ -187,8 +187,8 @@ class KeyAttestationChecker(private val context: Context) {
         val root = generated.certs.last()
         val rootStatus = identifyRoot(root)
         val status = when (rootStatus) {
-            RootStatus.GOOGLE, RootStatus.KNOX, RootStatus.OEM -> CheckStatus.PASS
-            RootStatus.AOSP, RootStatus.UNKNOWN -> CheckStatus.WARN
+            RootStatus.GOOGLE, RootStatus.KNOX, RootStatus.OEM -> HwCheckStatus.PASS
+            RootStatus.AOSP, RootStatus.UNKNOWN -> HwCheckStatus.WARN
         }
         val value = when (rootStatus) {
             RootStatus.GOOGLE -> "Google"
@@ -315,8 +315,8 @@ class KeyAttestationChecker(private val context: Context) {
             context.packageManager.hasSystemFeature("android.hardware.strongbox_keystore")
     }
 
-    private fun fallbackStatus(compromisedBoot: Boolean): CheckStatus {
-        return if (compromisedBoot) CheckStatus.FAIL else CheckStatus.WARN
+    private fun fallbackStatus(compromisedBoot: Boolean): HwCheckStatus {
+        return if (compromisedBoot) HwCheckStatus.FAIL else HwCheckStatus.WARN
     }
 
     private fun isBootStateCompromised(): Boolean {
@@ -443,7 +443,7 @@ class KeyAttestationChecker(private val context: Context) {
         id: String,
         name: String,
         group: HwGroup,
-        status: CheckStatus,
+        status: HwCheckStatus,
         description: String,
         detail: String?
     ) = HwCheckItem(
@@ -453,10 +453,10 @@ class KeyAttestationChecker(private val context: Context) {
         group = group,
         status = status,
         value = when (status) {
-            CheckStatus.PASS -> "Verified"
-            CheckStatus.FAIL -> "Failed"
-            CheckStatus.WARN -> "Warning"
-            CheckStatus.UNKNOWN -> "Info"
+            HwCheckStatus.PASS -> "Verified"
+            HwCheckStatus.FAIL -> "Failed"
+            HwCheckStatus.WARN -> "Warning"
+            HwCheckStatus.UNKNOWN -> "Info"
         },
         detail = detail
     )

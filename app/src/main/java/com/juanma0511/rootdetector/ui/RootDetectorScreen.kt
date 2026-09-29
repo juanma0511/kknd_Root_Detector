@@ -74,15 +74,15 @@ fun RootDetectorScreen(viewModel: MainViewModel) {
         }
 
         if (scanState == ScanState.DONE && scanResult != null) {
-            val filteredItems = scanResult!!.items.filter { item ->
+            val filteredItems = scanResult!!.checks.filter { item ->
                 selectedSeverity == null || item.severity == selectedSeverity
             }
             val grouped = filteredItems.sortedWith(
-                compareByDescending<DetectionItem> { it.detected }
+                compareByDescending<CheckResult> { it.detected }
                     .thenBy { it.severity.ordinal }
             )
             items(grouped) { item ->
-                DetectionItemCard(item)
+                CheckResultCard(item)
             }
         }
     }
@@ -104,16 +104,18 @@ fun StatusHeroCard(
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val statusColor = when {
         scanResult == null -> MaterialTheme.colorScheme.primary
-        scanResult.isRooted -> hardDetectionColor(isDark)
-        scanResult.isSuspicious -> warningColor(isDark)
+        scanResult.status == ScanStatus.ROOTED -> hardDetectionColor(isDark)
+        scanResult.status == ScanStatus.SUSPICIOUS -> warningColor(isDark)
+        scanResult.status == ScanStatus.INCOMPLETE -> MaterialTheme.colorScheme.error
         else -> passColor(isDark)
     }
 
     val containerColor = when {
         scanResult == null  -> if (isDark) Color(0xFF0D1B2E) else Color(0xFFDCE8FF)
-        scanResult.isRooted -> if (isDark) Color(0xFF2E0A0A) else Color(0xFFFFDAD6)
-        scanResult.isSuspicious -> if (isDark) Color(0xFF2A1A00) else Color(0xFFFFDBC8)
-        else                -> if (isDark) Color(0xFF0A1F0A) else Color(0xFFE8F5E9)
+        scanResult.status == ScanStatus.ROOTED -> if (isDark) Color(0xFF2E0A0A) else Color(0xFFFFDAD6)
+        scanResult.status == ScanStatus.SUSPICIOUS -> if (isDark) Color(0xFF2A1A00) else Color(0xFFFFDBC8)
+        scanResult.status == ScanStatus.INCOMPLETE -> MaterialTheme.colorScheme.errorContainer
+        else -> if (isDark) Color(0xFF0A1F0A) else Color(0xFFE8F5E9)
     }
 
     val iconScale by animateFloatAsState(
@@ -145,8 +147,9 @@ fun StatusHeroCard(
                 Icon(
                     imageVector = when {
                         scanState == ScanState.SCANNING -> Icons.Outlined.Search
-                        scanResult?.isRooted == true -> Icons.Filled.Warning
-                        scanResult?.isSuspicious == true -> Icons.Filled.Info
+                        scanResult?.status == ScanStatus.ROOTED -> Icons.Filled.Warning
+                        scanResult?.status == ScanStatus.SUSPICIOUS -> Icons.Filled.Info
+                        scanResult?.status == ScanStatus.INCOMPLETE -> Icons.Filled.Error
                         scanResult != null -> Icons.Filled.CheckCircle
                         else -> Icons.Outlined.Shield
                     },
@@ -162,8 +165,9 @@ fun StatusHeroCard(
                 text = when {
                     scanState == ScanState.IDLE -> "Ready to Scan"
                     scanState == ScanState.SCANNING -> "Scanning..."
-                    scanResult?.isRooted == true -> "Root Detected"
-                    scanResult?.isSuspicious == true -> "Suspicious"
+                    scanResult?.status == ScanStatus.ROOTED -> "Root Detected"
+                    scanResult?.status == ScanStatus.SUSPICIOUS -> "Suspicious"
+                    scanResult?.status == ScanStatus.INCOMPLETE -> "Scan Incomplete"
                     scanResult != null -> "Device Clean"
                     else -> "Ready to Scan"
                 },
@@ -176,11 +180,13 @@ fun StatusHeroCard(
                 text = when {
                     scanState == ScanState.IDLE -> "Tap below to run a full security analysis"
                     scanState == ScanState.SCANNING -> "Running $scanProgress% of checks..."
-                    scanResult?.isRooted == true ->
+                    scanResult?.status == ScanStatus.ROOTED ->
                         "${scanResult.detectedCount} indicators found · ${scanResult.highRiskCount} high risk"
-                    scanResult?.isSuspicious == true ->
-                        "${scanResult.detectedCount} low-risk indicators found"
-                    scanResult != null -> "All ${scanResult.items.size} checks passed"
+                    scanResult?.status == ScanStatus.SUSPICIOUS ->
+                        "${scanResult.detectedCount} warning indicators found"
+                    scanResult?.status == ScanStatus.INCOMPLETE ->
+                        "${scanResult.summary.failedChecks} check(s) failed to complete"
+                    scanResult != null -> "All ${scanResult.checks.size} checks completed without detections"
                     else -> ""
                 },
                 style = MaterialTheme.typography.bodyMedium,
@@ -326,7 +332,7 @@ fun SummaryChip(
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
-fun DetectionItemCard(item: DetectionItem) {
+fun CheckResultCard(item: CheckResult) {
     var expanded by remember { mutableStateOf(false) }
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     val clipboardManager = LocalClipboardManager.current
@@ -335,7 +341,12 @@ fun DetectionItemCard(item: DetectionItem) {
         Severity.HIGH    -> hardDetectionColor(isDark)
         Severity.WARNING -> warningColor(isDark)
     }
-    val accentColor = if (item.detected) severityColor else passColor(isDark)
+    val accentColor = when (item.status) {
+        CheckStatus.DETECTED -> severityColor
+        CheckStatus.ERROR -> MaterialTheme.colorScheme.error
+        CheckStatus.SKIPPED, CheckStatus.UNSUPPORTED -> MaterialTheme.colorScheme.outline
+        CheckStatus.NOT_DETECTED -> passColor(isDark)
+    }
     val accentContent = if (isDark) accentColor.copy(alpha = 0.88f) else accentColor
     val accentContainer = accentColor.copy(alpha = if (isDark) 0.14f else 0.12f)
     val accentSurface = accentColor.copy(alpha = if (isDark) 0.22f else 0.18f)
@@ -345,7 +356,7 @@ fun DetectionItemCard(item: DetectionItem) {
             .fillMaxWidth()
             .combinedClickable(
                 onClick = {
-                    if (item.detected) expanded = !expanded
+                    if (item.status != CheckStatus.NOT_DETECTED) expanded = !expanded
                 },
                 onLongClick = {
                     clipboardManager.setText(AnnotatedString(buildDetectionCopyText(item)))
@@ -406,7 +417,7 @@ fun DetectionItemCard(item: DetectionItem) {
                                 color = accentContent.copy(alpha = if (isDark) 0.86f else 0.92f)
                             )
                         }
-                        if (item.detected) {
+                        if (item.status != CheckStatus.NOT_DETECTED) {
                             Text(
                                 "Hold to copy",
                                 style = MaterialTheme.typography.labelSmall,
@@ -421,7 +432,13 @@ fun DetectionItemCard(item: DetectionItem) {
                     color = accentSurface
                 ) {
                     Text(
-                        if (item.detected) "FOUND" else "PASS",
+                        when (item.status) {
+                            CheckStatus.DETECTED -> "FOUND"
+                            CheckStatus.NOT_DETECTED -> "PASS"
+                            CheckStatus.ERROR -> "ERROR"
+                            CheckStatus.SKIPPED -> "SKIPPED"
+                            CheckStatus.UNSUPPORTED -> "N/A"
+                        },
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
@@ -430,13 +447,14 @@ fun DetectionItemCard(item: DetectionItem) {
                 }
             }
 
-            AnimatedVisibility(visible = expanded && item.detected) {
+            AnimatedVisibility(visible = expanded && item.status != CheckStatus.NOT_DETECTED) {
                 Column {
                     Spacer(Modifier.height(10.dp))
                     HorizontalDivider(color = accentContent.copy(alpha = if (isDark) 0.16f else 0.2f))
                     Spacer(Modifier.height(10.dp))
 
-                    if (item.detail != null) {
+                    val detail = item.detail
+                    if (detail != null) {
                         Text(
                             "Detail",
                             style = MaterialTheme.typography.labelMedium,
@@ -445,7 +463,7 @@ fun DetectionItemCard(item: DetectionItem) {
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            item.detail,
+                            detail,
                             style = MaterialTheme.typography.bodySmall,
                             color = accentContent,
                             fontFamily = FontFamily.Monospace
@@ -459,36 +477,46 @@ fun DetectionItemCard(item: DetectionItem) {
     }
 }
 
-private fun categoryIcon(category: DetectionCategory): ImageVector = when (category) {
-    DetectionCategory.SU_BINARIES   -> Icons.Outlined.Terminal
-    DetectionCategory.ROOT_APPS     -> Icons.Outlined.Apps
-    DetectionCategory.SYSTEM_PROPS  -> Icons.Outlined.Settings
-    DetectionCategory.MOUNT_POINTS  -> Icons.Outlined.FolderOpen
-    DetectionCategory.BUILD_TAGS    -> Icons.Outlined.Label
-    DetectionCategory.BUSYBOX       -> Icons.Outlined.Code
-    DetectionCategory.WRITABLE_PATHS -> Icons.Outlined.Lock
-    DetectionCategory.MAGISK        -> Icons.Outlined.Security
-    DetectionCategory.FRIDA         -> Icons.Outlined.BugReport
-    DetectionCategory.EMULATOR      -> Icons.Outlined.PhoneAndroid
-    DetectionCategory.CUSTOM_ROM    -> Icons.Outlined.Smartphone
+private fun categoryIcon(category: CheckCategory): ImageVector = when (category) {
+    CheckCategory.SU_BINARIES   -> Icons.Outlined.Terminal
+    CheckCategory.ROOT_APPS     -> Icons.Outlined.Apps
+    CheckCategory.SYSTEM_PROPS  -> Icons.Outlined.Settings
+    CheckCategory.MOUNT_POINTS  -> Icons.Outlined.FolderOpen
+    CheckCategory.BUILD_TAGS    -> Icons.Outlined.Label
+    CheckCategory.BUSYBOX       -> Icons.Outlined.Code
+    CheckCategory.WRITABLE_PATHS -> Icons.Outlined.Lock
+    CheckCategory.MAGISK        -> Icons.Outlined.Security
+    CheckCategory.FRIDA         -> Icons.Outlined.BugReport
+    CheckCategory.EMULATOR      -> Icons.Outlined.PhoneAndroid
+    CheckCategory.CUSTOM_ROM    -> Icons.Outlined.Smartphone
+    CheckCategory.INTEGRITY     -> Icons.Outlined.VerifiedUser
+    CheckCategory.SCANNER       -> Icons.Outlined.Memory
 }
 
-private fun categoryLabel(category: DetectionCategory): String = when (category) {
-    DetectionCategory.SU_BINARIES -> "SU"
-    DetectionCategory.ROOT_APPS -> "Apps"
-    DetectionCategory.SYSTEM_PROPS -> "Props"
-    DetectionCategory.MOUNT_POINTS -> "Mounts"
-    DetectionCategory.BUILD_TAGS -> "Build"
-    DetectionCategory.BUSYBOX -> "Binaries"
-    DetectionCategory.WRITABLE_PATHS -> "Paths"
-    DetectionCategory.MAGISK -> "Runtime"
-    DetectionCategory.FRIDA -> "Frida"
-    DetectionCategory.EMULATOR -> "Emulator"
-    DetectionCategory.CUSTOM_ROM -> "ROM"
+private fun categoryLabel(category: CheckCategory): String = when (category) {
+    CheckCategory.SU_BINARIES -> "SU"
+    CheckCategory.ROOT_APPS -> "Apps"
+    CheckCategory.SYSTEM_PROPS -> "Props"
+    CheckCategory.MOUNT_POINTS -> "Mounts"
+    CheckCategory.BUILD_TAGS -> "Build"
+    CheckCategory.BUSYBOX -> "Binaries"
+    CheckCategory.WRITABLE_PATHS -> "Paths"
+    CheckCategory.MAGISK -> "Runtime"
+    CheckCategory.FRIDA -> "Frida"
+    CheckCategory.EMULATOR -> "Emulator"
+    CheckCategory.CUSTOM_ROM -> "ROM"
+    CheckCategory.INTEGRITY -> "Integrity"
+    CheckCategory.SCANNER -> "Scanner"
 }
 
-private fun buildDetectionCopyText(item: DetectionItem): String {
-    val state = if (item.detected) "FOUND" else "PASS"
+private fun buildDetectionCopyText(item: CheckResult): String {
+    val state = when (item.status) {
+        CheckStatus.DETECTED -> "FOUND"
+        CheckStatus.NOT_DETECTED -> "PASS"
+        CheckStatus.ERROR -> "ERROR"
+        CheckStatus.SKIPPED -> "SKIPPED"
+        CheckStatus.UNSUPPORTED -> "UNSUPPORTED"
+    }
     return buildString {
         append("[${item.severity}] ${item.name}: $state")
         append('\n')

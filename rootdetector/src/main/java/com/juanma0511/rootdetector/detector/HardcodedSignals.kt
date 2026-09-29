@@ -2,7 +2,7 @@ package com.juanma0511.rootdetector.detector
 
 import java.util.Base64
 
-object HardcodedSignals {
+internal object HardcodedSignals {
     private const val KEY: Int = 0x37
 
     private fun decode(blob: String): String {

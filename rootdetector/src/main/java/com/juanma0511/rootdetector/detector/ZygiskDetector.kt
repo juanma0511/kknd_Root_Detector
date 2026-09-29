@@ -1,13 +1,14 @@
 package com.juanma0511.rootdetector.detector
 
-import com.juanma0511.rootdetector.model.DetectionCategory
-import com.juanma0511.rootdetector.model.DetectionItem
+import com.juanma0511.rootdetector.model.CheckCategory
+import com.juanma0511.rootdetector.model.CheckResult
+import com.juanma0511.rootdetector.model.CheckStatus
 import com.juanma0511.rootdetector.model.Severity
 import java.io.File
 
 class ZygiskDetector {
 
-    fun detect(): DetectionItem {
+    fun detect(): CheckResult {
         val evidence = linkedSetOf<String>()
         val trustedLocked = DetectorTrust.bootLooksTrustedLocked()
 
@@ -40,13 +41,13 @@ class ZygiskDetector {
             }
         } catch (_: Exception) {}
 
-        return DetectionItem(
+        return CheckResult(
             id = "zygisk_runtime",
             name = "Runtime Injection Framework",
             description = "Zygisk, LSPosed, Riru, LSPatch, TrickyStore or similar runtime artifacts",
-            category = DetectionCategory.MAGISK,
+            category = CheckCategory.MAGISK,
             severity = Severity.HIGH,
-            detected = evidence.isNotEmpty(),
+            status = if (evidence.isNotEmpty()) CheckStatus.DETECTED else CheckStatus.NOT_DETECTED,
             detail = evidence.take(6).joinToString("\n").ifEmpty { null }
         )
     }

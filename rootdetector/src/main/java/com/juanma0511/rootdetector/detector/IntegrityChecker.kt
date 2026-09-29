@@ -3,16 +3,17 @@ package com.juanma0511.rootdetector.detector
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import com.juanma0511.rootdetector.model.DetectionCategory
-import com.juanma0511.rootdetector.model.DetectionItem
+import com.juanma0511.rootdetector.model.CheckCategory
+import com.juanma0511.rootdetector.model.CheckResult
+import com.juanma0511.rootdetector.model.CheckStatus
 import com.juanma0511.rootdetector.model.Severity
 import java.io.File
 import java.security.MessageDigest
 
 class IntegrityChecker(private val context: Context) {
 
-    fun runAllChecks(): List<DetectionItem> {
-        val items = mutableListOf<DetectionItem>()
+    fun runAllChecks(): List<CheckResult> {
+        val items = mutableListOf<CheckResult>()
         items += checkApkSignature()
         items += checkClassLoader()
         items += checkDexIntegrity()
@@ -20,7 +21,7 @@ class IntegrityChecker(private val context: Context) {
         return items
     }
 
-    private fun checkApkSignature(): DetectionItem {
+    private fun checkApkSignature(): CheckResult {
         return try {
             val pm = context.packageManager
             val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -69,11 +70,11 @@ class IntegrityChecker(private val context: Context) {
         } catch (e: Exception) {
             det("apk_sig_error", "APK Signature Check Failed",
                 "Could not verify APK signature: ${e.message}",
-                Severity.WARNING, false, e.message)
+                Severity.WARNING, false, e.message, CheckStatus.ERROR)
         }
     }
 
-    private fun checkClassLoader(): DetectionItem {
+    private fun checkClassLoader(): CheckResult {
         val cl = context.classLoader
         val clName = cl.javaClass.name
         val clStr = cl.toString()
@@ -105,7 +106,7 @@ class IntegrityChecker(private val context: Context) {
             Severity.WARNING, false, clName)
     }
 
-    private fun checkDexIntegrity(): DetectionItem {
+    private fun checkDexIntegrity(): CheckResult {
         return try {
             val apkFile = File(context.packageCodePath)
 
@@ -162,11 +163,11 @@ class IntegrityChecker(private val context: Context) {
         } catch (e: Exception) {
             det("apk_size_error", "APK Integrity Check Failed",
                 "Error checking APK file: ${e.message}",
-                Severity.WARNING, false, e.message)
+                Severity.WARNING, false, e.message, CheckStatus.ERROR)
         }
     }
 
-    private fun checkTrustStore(): DetectionItem {
+    private fun checkTrustStore(): CheckResult {
         return try {
             val userCaDir = File("/data/misc/user/0/cacerts-added")
             val certs = if (userCaDir.exists() && userCaDir.isDirectory) {
@@ -186,16 +187,19 @@ class IntegrityChecker(private val context: Context) {
         } catch (e: Exception) {
             det("user_ca_error", "Trust Store Check Failed",
                 "Could not check user CA directory",
-                Severity.WARNING, false, e.message)
+                Severity.WARNING, false, e.message, CheckStatus.ERROR)
         }
     }
 
     private fun det(
         id: String, name: String, desc: String,
-        sev: Severity, detected: Boolean, detail: String?
-    ) = DetectionItem(
+        sev: Severity, detected: Boolean, detail: String?,
+        status: CheckStatus? = null
+    ) = CheckResult(
         id = id, name = name, description = desc,
-        category = DetectionCategory.MAGISK,
-        severity = sev, detected = detected, detail = detail
+        category = CheckCategory.INTEGRITY,
+        severity = sev,
+        status = status ?: if (detected) CheckStatus.DETECTED else CheckStatus.NOT_DETECTED,
+        detail = detail
     )
 }

@@ -38,6 +38,14 @@ public final class AppZygote implements ZygotePreload {
     static volatile String result = "ERROR: app zygote not called";
     static volatile String oracleResult = "ERROR: app zygote not called";
 
+    public static String getResult() {
+        return result;
+    }
+
+    public static String getContextValidityResult() {
+        return oracleResult;
+    }
+
     @Override
     public void doPreload(ApplicationInfo appInfo) {
         int uid = Os.getuid();

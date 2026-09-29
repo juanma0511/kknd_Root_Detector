@@ -6,7 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
-import com.juanma0511.rootdetector.model.CheckStatus
+import com.juanma0511.rootdetector.model.HwCheckStatus
 import com.juanma0511.rootdetector.model.HwCheckItem
 import com.juanma0511.rootdetector.model.HwGroup
 import java.io.BufferedReader
@@ -16,7 +16,7 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import javax.security.auth.x500.X500Principal
 
-class HwSecurityDetector(private val context: Context) {
+internal class HwSecurityDetector(private val context: Context) {
 
     fun runAllChecks(progressCallback: (Int) -> Unit = {}): List<HwCheckItem> {
         val checks = mutableListOf<() -> HwCheckItem>(
@@ -92,10 +92,10 @@ class HwSecurityDetector(private val context: Context) {
             val inTee = keyInfo?.isInsideSecureHardware ?: false
             val compromisedBoot = isBootStateCompromised()
             val status = when {
-                inTee && !compromisedBoot -> CheckStatus.PASS
-                inTee -> CheckStatus.WARN
-                !compromisedBoot -> CheckStatus.UNKNOWN
-                else -> CheckStatus.WARN
+                inTee && !compromisedBoot -> HwCheckStatus.PASS
+                inTee -> HwCheckStatus.WARN
+                !compromisedBoot -> HwCheckStatus.UNKNOWN
+                else -> HwCheckStatus.WARN
             }
 
             HwCheckItem(
@@ -122,7 +122,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "TEE (Trusted Execution Env.)",
                 group = HwGroup.KEYSTORE,
                 description = "Checks if keys can be backed by a hardware TEE",
-                status = CheckStatus.UNKNOWN,
+                status = HwCheckStatus.UNKNOWN,
                 value = "Error: ${e.message?.take(50)}",
                 detail = e.message
             )
@@ -169,10 +169,10 @@ class HwSecurityDetector(private val context: Context) {
             val secureLevel = hwBacked || secLevelLabel.contains("TEE") || secLevelLabel.contains("STRONGBOX")
             val compromisedBoot = isBootStateCompromised()
             val status = when {
-                secureLevel && !compromisedBoot -> CheckStatus.PASS
-                secureLevel -> CheckStatus.WARN
-                !compromisedBoot -> CheckStatus.UNKNOWN
-                else -> CheckStatus.WARN
+                secureLevel && !compromisedBoot -> HwCheckStatus.PASS
+                secureLevel -> HwCheckStatus.WARN
+                !compromisedBoot -> HwCheckStatus.UNKNOWN
+                else -> HwCheckStatus.WARN
             }
 
             HwCheckItem(
@@ -196,7 +196,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "Keystore Security Level",
                 group = HwGroup.KEYSTORE,
                 description = "Reports the security level of the Android Keystore",
-                status = CheckStatus.UNKNOWN,
+                status = HwCheckStatus.UNKNOWN,
                 value = "Error: ${e.message?.take(60)}"
             )
         }
@@ -212,7 +212,7 @@ class HwSecurityDetector(private val context: Context) {
             name = "StrongBox Feature",
             group = HwGroup.KEYSTORE,
             description = "Checks if the device has a dedicated StrongBox security chip",
-            status = if (hasStrongBox) CheckStatus.PASS else CheckStatus.UNKNOWN,
+            status = if (hasStrongBox) HwCheckStatus.PASS else HwCheckStatus.UNKNOWN,
             value = if (hasStrongBox) "Present" else "Not available",
             expected = "Optional",
             detail = if (!hasStrongBox) "No dedicated StrongBox chip. TEE is used instead and that is normal on many devices." else null
@@ -226,7 +226,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "StrongBox Key Generation",
                 group = HwGroup.KEYSTORE,
                 description = "Attempts to generate a key in StrongBox",
-                status = CheckStatus.UNKNOWN,
+                status = HwCheckStatus.UNKNOWN,
                 value = "Android < 9",
                 detail = "StrongBox-backed key generation is not available on this Android version"
             )
@@ -237,7 +237,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "StrongBox Key Generation",
                 group = HwGroup.KEYSTORE,
                 description = "Attempts to generate a key in StrongBox",
-                status = CheckStatus.UNKNOWN,
+                status = HwCheckStatus.UNKNOWN,
                 value = "Not available",
                 detail = "This device does not advertise StrongBox-backed key generation"
             )
@@ -263,7 +263,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "StrongBox Key Generation",
                 group = HwGroup.KEYSTORE,
                 description = "Attempts to generate a key backed by StrongBox hardware",
-                status = CheckStatus.PASS,
+                status = HwCheckStatus.PASS,
                 value = "Success — key generated in StrongBox"
             )
         } catch (e: StrongBoxUnavailableException) {
@@ -272,7 +272,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "StrongBox Key Generation",
                 group = HwGroup.KEYSTORE,
                 description = "Attempts to generate a key backed by StrongBox hardware",
-                status = CheckStatus.UNKNOWN,
+                status = HwCheckStatus.UNKNOWN,
                 value = "StrongBox unavailable",
                 detail = "The device did not expose StrongBox-backed key generation"
             )
@@ -282,7 +282,7 @@ class HwSecurityDetector(private val context: Context) {
                 name = "StrongBox Key Generation",
                 group = HwGroup.KEYSTORE,
                 description = "Attempts to generate a key backed by StrongBox hardware",
-                status = CheckStatus.FAIL,
+                status = HwCheckStatus.FAIL,
                 value = "Error",
                 detail = e.message
             )
@@ -295,10 +295,10 @@ class HwSecurityDetector(private val context: Context) {
             .ifEmpty { "unknown" }
 
         val status = when (state.lowercase()) {
-            "green" -> CheckStatus.PASS
-            "yellow" -> CheckStatus.WARN
-            "orange", "red" -> CheckStatus.FAIL
-            else -> CheckStatus.UNKNOWN
+            "green" -> HwCheckStatus.PASS
+            "yellow" -> HwCheckStatus.WARN
+            "orange", "red" -> HwCheckStatus.FAIL
+            else -> HwCheckStatus.UNKNOWN
         }
         return HwCheckItem(
             id = "verified_boot_state",
@@ -327,7 +327,7 @@ class HwSecurityDetector(private val context: Context) {
             name = "Verified Boot Key / Digest",
             group = HwGroup.BOOT,
             description = "ro.boot.vbmeta.digest and ro.boot.bootkey should not be unknown or all-zero on a healthy verified boot chain",
-            status = if (invalidKey) CheckStatus.FAIL else CheckStatus.PASS,
+            status = if (invalidKey) HwCheckStatus.FAIL else HwCheckStatus.PASS,
             value = if (key.length > 32) key.take(16) + "…" + key.takeLast(8) else key,
             expected = "Known non-zero OEM digest",
             detail = when {
@@ -349,9 +349,9 @@ class HwSecurityDetector(private val context: Context) {
             group = HwGroup.BOOT,
             description = "ro.boot.flash.locked — 1=locked (secure), 0=unlocked",
             status = when {
-                locked -> CheckStatus.PASS
-                unlocked -> CheckStatus.FAIL
-                else -> CheckStatus.UNKNOWN
+                locked -> HwCheckStatus.PASS
+                unlocked -> HwCheckStatus.FAIL
+                else -> HwCheckStatus.UNKNOWN
             },
             value = when {
                 locked -> "LOCKED (1)"
@@ -375,9 +375,9 @@ class HwSecurityDetector(private val context: Context) {
             group = HwGroup.BOOT,
             description = "ro.boot.veritymode — enforcing means system partition is verified",
             status = when {
-                enforcing -> CheckStatus.PASS
-                disabled -> CheckStatus.FAIL
-                else -> CheckStatus.UNKNOWN
+                enforcing -> HwCheckStatus.PASS
+                disabled -> HwCheckStatus.FAIL
+                else -> HwCheckStatus.UNKNOWN
             },
             value = mode.ifEmpty { "unknown" }.uppercase(),
             expected = "ENFORCING",
@@ -394,7 +394,7 @@ class HwSecurityDetector(private val context: Context) {
             name = "VBMeta Digest (AVB)",
             group = HwGroup.VBMETA,
             description = "SHA-256 of vbmeta partition should not be unknown or all-zero on a healthy AVB chain",
-            status = if (invalidDigest) CheckStatus.FAIL else CheckStatus.PASS,
+            status = if (invalidDigest) HwCheckStatus.FAIL else HwCheckStatus.PASS,
             value = if (digest.length > 32) "${digest.take(12)}…${digest.takeLast(8)} (${avbSize}B)" else digest,
             expected = "Known non-zero AVB digest",
             detail = when {
@@ -414,9 +414,9 @@ class HwSecurityDetector(private val context: Context) {
             group = HwGroup.VBMETA,
             description = "ro.boot.avb_version — AVB 2.0+ required for full partition verification",
             status = when {
-                avbVer.startsWith("2") || avbVer.startsWith("3") -> CheckStatus.PASS
-                avbVer.startsWith("1.") && avbVer >= "1.3" -> CheckStatus.PASS
-                else -> CheckStatus.UNKNOWN
+                avbVer.startsWith("2") || avbVer.startsWith("3") -> HwCheckStatus.PASS
+                avbVer.startsWith("1.") && avbVer >= "1.3" -> HwCheckStatus.PASS
+                else -> HwCheckStatus.UNKNOWN
             },
             value = if (avbVer == "unknown") "Not detected" else avbVer,
             expected = "1.3+ or 2.x"
@@ -432,7 +432,7 @@ class HwSecurityDetector(private val context: Context) {
             name = "File-Based Encryption",
             group = HwGroup.SYSTEM_PROPS,
             description = "ro.crypto.state should be 'encrypted' on all modern devices",
-            status = if (encrypted) CheckStatus.PASS else CheckStatus.WARN,
+            status = if (encrypted) HwCheckStatus.PASS else HwCheckStatus.WARN,
             value = if (encrypted) "encrypted${if (type.isNotEmpty()) " ($type)" else ""}" else crypto,
             expected = "encrypted",
             detail = if (!encrypted && crypto != "unknown") "Storage is not encrypted" else null
@@ -456,7 +456,7 @@ class HwSecurityDetector(private val context: Context) {
             name = "Security Patch Level",
             group = HwGroup.SYSTEM_PROPS,
             description = "Build.VERSION.SECURITY_PATCH — older than 12 months is a risk",
-            status = if (ok) CheckStatus.PASS else CheckStatus.WARN,
+            status = if (ok) HwCheckStatus.PASS else HwCheckStatus.WARN,
             value = patch,
             expected = "Within last 12 months",
             detail = if (!ok) "Patch older than 12 months — may be vulnerable to known CVEs" else null

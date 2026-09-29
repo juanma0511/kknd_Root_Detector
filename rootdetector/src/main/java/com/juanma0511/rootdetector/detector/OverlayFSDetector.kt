@@ -1,13 +1,14 @@
 package com.juanma0511.rootdetector.detector
 
-import com.juanma0511.rootdetector.model.DetectionCategory
-import com.juanma0511.rootdetector.model.DetectionItem
+import com.juanma0511.rootdetector.model.CheckCategory
+import com.juanma0511.rootdetector.model.CheckResult
+import com.juanma0511.rootdetector.model.CheckStatus
 import com.juanma0511.rootdetector.model.Severity
 import java.io.File
 
 class OverlayFsDetector {
 
-    fun detect(): DetectionItem {
+    fun detect(): CheckResult {
         val evidence = linkedSetOf<String>()
         val trustedLocked = DetectorTrust.bootLooksTrustedLocked()
 
@@ -28,13 +29,13 @@ class OverlayFsDetector {
             }
         } catch (_: Exception) {}
 
-        return DetectionItem(
+        return CheckResult(
             id = "overlayfs_system",
             name = "OverlayFS Modification",
             description = "System partitions backed by root-specific overlay, tmpfs, loop or adb staging traces",
-            category = DetectionCategory.MOUNT_POINTS,
+            category = CheckCategory.MOUNT_POINTS,
             severity = Severity.WARNING,
-            detected = evidence.isNotEmpty(),
+            status = if (evidence.isNotEmpty()) CheckStatus.DETECTED else CheckStatus.NOT_DETECTED,
             detail = evidence.take(6).joinToString("\n").ifEmpty { null }
         )
     }

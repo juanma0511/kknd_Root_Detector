@@ -1,3 +1,8 @@
+// TODO: Legacy JNI implementation. This file is not included by the current
+// CMakeLists.txt and its JNI entry points still reference the old
+// com.example.rootdetector package. Verify that no callers depend on it, then
+// remove it in a dedicated cleanup change.
+
 #include <jni.h>
 #include <string>
 #include <cstring>

@@ -9,7 +9,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 android {
     namespace = "com.juanma0511.rootdetector"
     compileSdk = 36
-    ndkVersion = "28.0.12433566"
 
     defaultConfig {
         applicationId = "com.juanma0511.rootdetector"
@@ -19,21 +18,8 @@ android {
         versionName = "3.3"
         buildToolsVersion = "36.1.0"
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments += "-DANDROID_STL=c++_static"
-                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
-            }
-        }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
 
     splits {
         abi {
@@ -91,7 +77,6 @@ android {
 
     buildFeatures {
         compose = true
-        aidl   = true
     }
 
     lint {
@@ -107,6 +92,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":rootdetector"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
