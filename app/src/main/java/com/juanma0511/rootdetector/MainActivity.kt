@@ -25,18 +25,20 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.juanma0511.rootdetector.R
 import com.juanma0511.rootdetector.ui.*
 
 data class NavItem(
-    val label: String,
+    val labelRes: Int,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 )
 
 val navItems = listOf(
-    NavItem("Root Scan",   Icons.Filled.Security,  Icons.Outlined.Security),
-    NavItem("HW Security", Icons.Filled.Hardware,  Icons.Outlined.Hardware),
-    NavItem("Settings",    Icons.Filled.Settings,  Icons.Outlined.Settings)
+    NavItem(R.string.root_scan, Icons.Filled.Security, Icons.Outlined.Security),
+    NavItem(R.string.hardware_security, Icons.Filled.Hardware, Icons.Outlined.Hardware),
+    NavItem(R.string.settings, Icons.Filled.Settings, Icons.Outlined.Settings)
 )
 
 class MainActivity : ComponentActivity() {
@@ -80,14 +82,14 @@ fun MainShell(
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    val titles = listOf("kknd Detector", "Hardware Security", "Settings")
+    val titles = listOf(R.string.app_name, R.string.hardware_security, R.string.settings)
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        titles[selectedTab],
+                        stringResource(titles[selectedTab]),
                         style = MaterialTheme.typography.titleLarge
                     )
                 },
@@ -219,13 +221,13 @@ fun PillNavItem(
         ) {
             Icon(
                 imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
-                contentDescription = item.label,
+                contentDescription = stringResource(item.labelRes),
                 tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
                        else          MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (selected) {
                 Text(
-                    text  = item.label,
+                    text  = stringResource(item.labelRes),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                     maxLines = 1

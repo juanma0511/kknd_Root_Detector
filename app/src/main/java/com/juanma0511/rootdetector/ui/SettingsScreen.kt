@@ -34,8 +34,8 @@ import coil.request.ImageRequest
 data class Contributor(
     val login: String,
     val displayName: String,
-    val role: String,
-    val bio: String,
+    val roleRes: Int,
+    val bioRes: Int?,
     val avatarUrl: String,
     val profileUrl: String
 )
@@ -44,40 +44,40 @@ private val CONTRIBUTORS = listOf(
     Contributor(
         login = "juanma0511",
         displayName = "Juan Ma",
-        role = "Developer",
-        bio = "",
+        roleRes = R.string.developer,
+        bioRes = null,
         avatarUrl = "https://avatars.githubusercontent.com/u/121111348?v=4",
         profileUrl = "https://github.com/juanma0511"
     ),
     Contributor(
         login = "OukaroMF",
         displayName = "OukaroMF",
-        role = "Artist",
-        bio = "Created the app's artwork and visual assets",
+        roleRes = R.string.artist,
+        bioRes = R.string.artwork_bio,
         avatarUrl = "https://avatars.githubusercontent.com/u/107784230?v=4",
         profileUrl = "https://github.com/OukaroMF"
     ),
     Contributor(
         login = "salihefee",
         displayName = "salihefee",
-        role = "Contributor",
-        bio = "Cleaned up duplicate detection descriptions",
+        roleRes = R.string.contributor,
+        bioRes = R.string.descriptions_bio,
         avatarUrl = "https://avatars.githubusercontent.com/u/61908056?v=4",
         profileUrl = "https://github.com/salihefee"
     ),
     Contributor(
         login = "WaggBR",
         displayName = "WaggBR",
-        role = "Translator",
-        bio = "Added Portuguese (BR) translations",
+        roleRes = R.string.translator,
+        bioRes = R.string.portuguese_translation_bio,
         avatarUrl = "https://avatars.githubusercontent.com/u/57603689?v=4",
         profileUrl = "https://github.com/WaggBR"
     ),
     Contributor(
         login = "originalFactor",
         displayName = "originalFactor",
-        role = "Contributor",
-        bio = "Fixed artwork assets for platform compatibility",
+        roleRes = R.string.contributor,
+        bioRes = R.string.artwork_compatibility_bio,
         avatarUrl = "https://avatars.githubusercontent.com/u/72148355?v=4",
         profileUrl = "https://github.com/originalFactor"
     )
@@ -284,15 +284,15 @@ fun ContributorRow(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    contributor.role,
+                    stringResource(contributor.roleRes),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Medium
                 )
-                if (contributor.bio.isNotEmpty()) {
+                contributor.bioRes?.let { bioRes ->
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        contributor.bio,
+                        stringResource(bioRes),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -305,7 +305,7 @@ fun ContributorRow(
             ) {
                 Icon(
                     Icons.Outlined.Code,
-                    contentDescription = "GitHub",
+                    contentDescription = stringResource(R.string.github),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
