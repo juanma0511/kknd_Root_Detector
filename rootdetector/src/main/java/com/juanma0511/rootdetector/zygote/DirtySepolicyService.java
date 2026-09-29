@@ -10,12 +10,12 @@ public final class DirtySepolicyService extends Service {
     private final IDirtySepolicyService.Stub binder = new IDirtySepolicyService.Stub() {
         @Override
         public String getResult() {
-            return AppZygote.result;
+            return AppZygote.getResult();
         }
 
         @Override
         public String getContextValidityResult() {
-            return AppZygote.oracleResult;
+            return AppZygote.getContextValidityResult();
         }
     };
 

@@ -6,57 +6,101 @@ plugins {
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
 
-val defaultZygotePreloadClass = "com.juanma0511.rootdetector.zygote.AppZygote"
-val zygotePreloadClass = providers.gradleProperty("zygotePreloadClass")
-    .orElse(defaultZygotePreloadClass)
+val defaultRootDetectorPackage = "com.juanma0511.rootdetector"
+val rootDetectorPackage = providers.gradleProperty("rootDetectorPackage")
+    .orElse(defaultRootDetectorPackage)
     .get()
 
-val zygoteClassPattern = Regex("^[A-Za-z_$][A-Za-z\\d_$]*(\\.[A-Za-z_$][A-Za-z\\d_$]*)+$")
-require(zygoteClassPattern.matches(zygotePreloadClass)) {
-    "Invalid -PzygotePreloadClass value: $zygotePreloadClass"
+// Keep custom package names simple and JNI-safe. This intentionally disallows
+// underscores/$ in custom segments so the generated JNI symbol stays trivial.
+val packagePattern = Regex("^[A-Za-z][A-Za-z0-9]*(\\.[A-Za-z][A-Za-z0-9]*)+$")
+require(packagePattern.matches(rootDetectorPackage)) {
+    "Invalid -ProotDetectorPackage value: $rootDetectorPackage"
 }
 
-val generatedZygoteDir = layout.buildDirectory.dir("generated/source/zygotePreload/main/java")
+val isRelocatedBuild = rootDetectorPackage != defaultRootDetectorPackage
+val relocatedRoot = layout.buildDirectory.dir("generated/relocatedRootDetector/main")
+val relocatedJavaDir = relocatedRoot.map { it.dir("java") }
+val relocatedAidlDir = relocatedRoot.map { it.dir("aidl") }
 
-val generateZygotePreloadClass by tasks.registering {
-    inputs.property("zygotePreloadClass", zygotePreloadClass)
-    outputs.dir(generatedZygoteDir)
+val generateRelocatedRootDetectorSources by tasks.registering {
+    onlyIf { isRelocatedBuild }
+    inputs.property("rootDetectorPackage", rootDetectorPackage)
+    inputs.dir("src/main/java")
+    inputs.dir("src/main/aidl")
+    outputs.dir(relocatedRoot)
 
     doLast {
-        val outputDir = generatedZygoteDir.get().asFile
-        outputDir.deleteRecursively()
-        outputDir.mkdirs()
+        val outputRoot = relocatedRoot.get().asFile
+        outputRoot.deleteRecursively()
 
-        if (zygotePreloadClass == defaultZygotePreloadClass) return@doLast
+        val oldPath = defaultRootDetectorPackage.replace('.', '/')
+        val newPath = rootDetectorPackage.replace('.', '/')
 
-        val packageName = zygotePreloadClass.substringBeforeLast('.')
-        val simpleName = zygotePreloadClass.substringAfterLast('.')
-        val sourceFile = File(
-            outputDir,
-            packageName.replace('.', '/') + "/$simpleName.java"
-        )
-        sourceFile.parentFile.mkdirs()
-        sourceFile.writeText(
-            """
-            package $packageName;
+        fun relocateTree(sourceRoot: File, targetRoot: File) {
+            if (!sourceRoot.exists()) return
+            sourceRoot.walkTopDown()
+                .filter { it.isFile }
+                .forEach { sourceFile ->
+                    val relative = sourceFile.relativeTo(sourceRoot).invariantSeparatorsPath
+                    var relocatedRelative = if (relative.startsWith("$oldPath/")) {
+                        "$newPath/${relative.removePrefix("$oldPath/")}"
+                    } else {
+                        relative
+                    }
 
-            /** Generated build-specific App Zygote preload entry point. */
-            public final class $simpleName
-                    extends com.juanma0511.rootdetector.zygote.AppZygote {
-            }
-            """.trimIndent() + "\n"
-        )
+                    if (isRelocatedBuild) {
+                        relocatedRelative = relocatedRelative
+                            .replace("/AppZygote.java", "/PreloadCore.java")
+                            .replace("/DirtySepolicyService.java", "/PolicyService.java")
+                    }
+
+                    val targetFile = File(targetRoot, relocatedRelative)
+                    targetFile.parentFile.mkdirs()
+
+                    var relocatedText = sourceFile.readText()
+                        .replace(defaultRootDetectorPackage, rootDetectorPackage)
+
+                    if (isRelocatedBuild) {
+                        relocatedText = relocatedText
+                            .replace("AppZygote", "PreloadCore")
+                            .replace("DirtySepolicyService", "PolicyService")
+                            // Keep the Binder/AIDL interface name stable. The service class is
+                            // renamed to PolicyService, but AIDL requires its declared interface
+                            // name to match the IDirtySepolicyService.aidl filename exactly.
+                            .replace("IPolicyService", "IDirtySepolicyService")
+                    }
+
+                    targetFile.writeText(relocatedText)
+                }
+        }
+
+        relocateTree(file("src/main/java"), relocatedJavaDir.get().asFile)
+        relocateTree(file("src/main/aidl"), relocatedAidlDir.get().asFile)
     }
 }
 
+val zygotePreloadClass = if (isRelocatedBuild) {
+    "$rootDetectorPackage.zygote.PreloadCore"
+} else {
+    "$rootDetectorPackage.zygote.AppZygote"
+}
+val dirtySepolicyServiceClass = if (isRelocatedBuild) {
+    "$rootDetectorPackage.zygote.PolicyService"
+} else {
+    "$rootDetectorPackage.zygote.DirtySepolicyService"
+}
+val jniMethodName = "Java_${rootDetectorPackage.replace('.', '_')}_detector_NativeChecks_runNativeChecks"
+
 android {
-    namespace = "com.juanma0511.rootdetector"
+    namespace = rootDetectorPackage
     compileSdk = 36
     ndkVersion = "28.0.12433566"
 
     defaultConfig {
         minSdk = 26
         manifestPlaceholders["rootDetectorZygotePreloadName"] = zygotePreloadClass
+        manifestPlaceholders["rootDetectorDirtySepolicyServiceName"] = dirtySepolicyServiceClass
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -65,6 +109,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
+                cppFlags += "-DROOTDETECTOR_JNI_METHOD=$jniMethodName"
                 arguments += "-DANDROID_STL=c++_static"
                 arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
@@ -74,7 +119,12 @@ android {
     }
 
     sourceSets {
-        getByName("main").java.srcDir(generatedZygoteDir)
+        getByName("main") {
+            if (isRelocatedBuild) {
+                java.setSrcDirs(listOf(relocatedJavaDir.get().asFile))
+                aidl.setSrcDirs(listOf(relocatedAidlDir.get().asFile))
+            }
+        }
     }
 
     externalNativeBuild {
@@ -111,7 +161,8 @@ android {
     }
 }
 
-
 tasks.named("preBuild").configure {
-    dependsOn(generateZygotePreloadClass)
+    if (isRelocatedBuild) {
+        dependsOn(generateRelocatedRootDetectorSources)
+    }
 }

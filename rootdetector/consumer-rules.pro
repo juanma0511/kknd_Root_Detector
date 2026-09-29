@@ -1,12 +1,13 @@
-# NativeChecks uses statically named JNI entry points. Keep the class and native
+# NativeChecks uses a statically named JNI entry point. Keep the class and native
 # method names stable when the consuming application enables R8/ProGuard.
--keep class com.juanma0511.rootdetector.detector.NativeChecks { *; }
+-keep class **.detector.NativeChecks { *; }
 
 # These classes are referenced by the merged AndroidManifest/AIDL runtime.
--keep class com.juanma0511.rootdetector.zygote.AppZygote { *; }
--keep class com.juanma0511.rootdetector.zygote.DirtySepolicyService { *; }
--keep interface com.juanma0511.rootdetector.zygote.IDirtySepolicyService { *; }
+-keep class **.zygote.AppZygote { *; }
+-keep class **.zygote.PreloadCore { *; }
+-keep class **.zygote.DirtySepolicyService { *; }
+-keep class **.zygote.PolicyService { *; }
+-keep interface **.zygote.IDirtySepolicyService { *; }
 
-# Keep an optional build-generated App Zygote entry point and its exact class
-# name because android:zygotePreloadName loads it reflectively from the manifest.
--keep public class * extends com.juanma0511.rootdetector.zygote.AppZygote { *; }
+# android:zygotePreloadName loads this class reflectively from the manifest.
+-keep class * implements android.app.ZygotePreload { *; }

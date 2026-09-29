@@ -2604,8 +2604,12 @@ static void detectSelinuxDirtyPolicy() {
 //
 // Until then, NOT_DETECTED does not always guarantee that the native probe
 // completed successfully.
+#ifndef ROOTDETECTOR_JNI_METHOD
+#define ROOTDETECTOR_JNI_METHOD Java_com_juanma0511_rootdetector_detector_NativeChecks_runNativeChecks
+#endif
+
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_juanma0511_rootdetector_detector_NativeChecks_runNativeChecks(JNIEnv* env, jobject) {
+ROOTDETECTOR_JNI_METHOD(JNIEnv* env, jobject) {
     g_results.clear();
     g_task_results.clear();
     g_seen.clear();

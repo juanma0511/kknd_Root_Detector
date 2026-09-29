@@ -31,12 +31,20 @@ import java.util.LinkedHashSet;
  * </ul>
  */
 @TargetApi(29)
-public class AppZygote implements ZygotePreload {
+public final class AppZygote implements ZygotePreload {
 
     private static final String TAG = "RootDetector-AppZygote";
 
     static volatile String result = "ERROR: app zygote not called";
     static volatile String oracleResult = "ERROR: app zygote not called";
+
+    public static String getResult() {
+        return result;
+    }
+
+    public static String getContextValidityResult() {
+        return oracleResult;
+    }
 
     @Override
     public void doPreload(ApplicationInfo appInfo) {
