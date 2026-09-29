@@ -42,7 +42,7 @@
     <string name="artist">Artist</string>
     <string name="contributor">Contributor</string>
     <string name="translator">Translator</string>
-    <string name="artwork_bio">Created the app's artwork and visual assets</string>
+    <string name="artwork_bio">Created the app\' artwork and visual assets</string>
     <string name="descriptions_bio">Cleaned up duplicate detection descriptions</string>
     <string name="portuguese_translation_bio">Added Portuguese (BR) translations</string>
     <string name="artwork_compatibility_bio">Fixed artwork assets for platform compatibility</string>
@@ -192,7 +192,7 @@
     <string name="det_desc_verified_boot_key">ro.boot.vbmeta.digest and ro.boot.bootkey should not be unknown or all-zero on a healthy verified boot chain</string>
     <string name="det_desc_bootloader_state">ro.boot.flash.locked - 1=locked (secure), 0=unlocked</string>
     <string name="det_desc_dm_verity">ro.boot.veritymode - enforcing means system partition is verified</string>
-    <string name="det_desc_encryption">ro.crypto.state should be 'encrypted' on all modern devices</string>
+    <string name="det_desc_encryption">ro.crypto.state should be \'encrypted\' on all modern devices</string>
     <string name="det_desc_security_patch">Build.VERSION.SECURITY_PATCH - older than 12 months is a risk</string>
     <string name="det_desc_attestation">Generates an attested key and checks whether the returned chain exposes TEE or StrongBox attestation</string>
 
@@ -201,5 +201,5 @@
     <string name="developer_name">Juan Ma</string>
     <string name="developer_role">Developer</string>
 
-    <string name="built_with">Built with ❤️ for everyone! · Jetpack Compose</string>
+<string name="built_with">Built with ❤️ for everyone! · Jetpack Compose</string>
 </resources>

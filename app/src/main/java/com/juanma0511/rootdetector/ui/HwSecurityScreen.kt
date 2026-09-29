@@ -362,7 +362,7 @@ private fun groupLabel(group: HwGroup) = stringResource(when (group) {
     HwGroup.VBMETA       -> R.string.group_vbmeta
     HwGroup.SYSTEM_PROPS -> R.string.group_system_properties
 })
-}
+
 
 private fun groupIcon(group: HwGroup): androidx.compose.ui.graphics.vector.ImageVector = when (group) {
     HwGroup.KEYSTORE     -> Icons.Outlined.Key

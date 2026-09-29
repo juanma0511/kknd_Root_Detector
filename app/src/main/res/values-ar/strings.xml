@@ -198,7 +198,7 @@
     <string name="det_desc_verified_boot_key">يجب ألا تكون ro.boot.vbmeta.digest وro.boot.bootkey غير معروفتين أو مكوّنتين بالكامل من أصفار في سلسلة Verified Boot السليمة</string>
     <string name="det_desc_bootloader_state">ro.boot.flash.locked - 1=مقفول (آمن)، 0=غير مقفول</string>
     <string name="det_desc_dm_verity">ro.boot.veritymode - يعني enforcing أن قسم النظام تم التحقق منه</string>
-    <string name="det_desc_encryption">يجب أن تكون قيمة ro.crypto.state هي 'encrypted' في الأجهزة الحديثة</string>
+    <string name="det_desc_encryption">يجب أن تكون حالة ro.crypto.state \'encrypted\' في جميع الأجهزة الحديثة</string>
     <string name="det_desc_security_patch">Build.VERSION.SECURITY_PATCH - يُعد التصحيح الأقدم من 12 شهراً خطراً</string>
     <string name="det_desc_attestation">ينشئ مفتاحاً مع إثبات ويفحص ما إذا كانت السلسلة المُعادة تكشف عن إثبات TEE أو StrongBox</string>
 </resources>
